@@ -82,11 +82,27 @@ public sealed class DailyJobService
             jobId = await _repository.BeginJobAsync(targetDate, attemptNumber, startedAt, cancellationToken).ConfigureAwait(false);
 
             // 步驟一：鉅亨網多頭／空頭排列完整清單（集中＋店頭），僅作清單保存與交叉驗證，不再是正式均價來源。
+            // 均線正式判斷已改依 TWSE／TPEx 官方資料計算，鉅亨網本步驟採 best-effort：
+            // 網站尚未更新或擷取失敗時，只記錄提醒訊息並繼續執行官方價格與策略流程，不得整批失敗。
             _userInteraction.ShowStatus($"正在擷取 {targetDate:yyyy-MM-dd} 鉅亨網多頭／空頭排列清單……");
             _logger.Info($"工作 {jobId} 開始。目標日期={targetDate:yyyy-MM-dd}，第 {attemptNumber} 次。");
-            var cnyesBatches = await CrawlAllRequiredBatchesAsync(jobId, settings, targetDate, cancellationToken).ConfigureAwait(false);
-            totalCrawled = cnyesBatches.Sum(x => x.Items.Count);
-            await _repository.SaveCompleteTechnicalBatchAsync(jobId, cnyesBatches, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<CrawlBatch> cnyesBatches = [];
+            string? cnyesReminder = null;
+            try
+            {
+                cnyesBatches = await CrawlAllRequiredBatchesAsync(jobId, settings, targetDate, cancellationToken).ConfigureAwait(false);
+                totalCrawled = cnyesBatches.Sum(x => x.Items.Count);
+                await _repository.SaveCompleteTechnicalBatchAsync(jobId, cnyesBatches, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                cnyesReminder = $"鉅亨網多頭／空頭排列清單本次未成功更新，僅影響清單保存與交叉驗證，不影響均線與策略正式判斷（原因：{ex.Message}）。";
+                _logger.Warning(cnyesReminder);
+            }
 
             // 步驟二：TWSE／TPEx 官方每日收盤價；來源資料日期必須等於 targetDate 才可寫入正式資料。
             _userInteraction.ShowStatus($"正在擷取 {targetDate:yyyy-MM-dd} TWSE／TPEx 官方每日收盤價……");
@@ -95,9 +111,15 @@ public sealed class DailyJobService
 
             if (priceBatches.All(x => x.Status == OfficialPriceBatchStatus.Holiday))
             {
+                var holidayMessage = "今日為休市日，TWSE／TPEx 官方來源均無交易資料，本次不產生策略通知。";
+                if (cnyesReminder is not null)
+                {
+                    holidayMessage += $" 提醒：{cnyesReminder}";
+                }
+
                 var holidaySummary = new JobRunSummary(
                     jobId, targetDate, JobStatus.NoTradingData, RunOutcome.NonRetryableFailure,
-                    "今日為休市日，TWSE／TPEx 官方來源均無交易資料，本次不產生策略通知。",
+                    holidayMessage,
                     attemptNumber, totalCrawled, 0, 0, 0, startedAt, _clock.GetTaipeiNow(), []);
                 await _repository.CompleteJobAsync(jobId, holidaySummary, cancellationToken).ConfigureAwait(false);
                 _logger.Info($"工作 {jobId}：{holidaySummary.Message}");
@@ -151,12 +173,18 @@ public sealed class DailyJobService
             await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, alerts, cancellationToken).ConfigureAwait(false);
 
             var completedAt = _clock.GetTaipeiNow();
+            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx 官方收盤價。";
+            if (cnyesReminder is not null)
+            {
+                successMessage += $" 提醒：{cnyesReminder}";
+            }
+
             var success = new JobRunSummary(
                 jobId,
                 targetDate,
                 JobStatus.Succeeded,
                 RunOutcome.Success,
-                $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx 官方收盤價。",
+                successMessage,
                 attemptNumber,
                 totalCrawled,
                 holdingCount,

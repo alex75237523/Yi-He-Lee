@@ -1,0 +1,89 @@
+using YiHeLee.App.Infrastructure;
+using YiHeLee.Application.Services;
+using YiHeLee.Infrastructure.Crawlers;
+using YiHeLee.Infrastructure.Data;
+using YiHeLee.Infrastructure.Excel;
+using YiHeLee.Infrastructure.Logging;
+using YiHeLee.Infrastructure.Settings;
+using YiHeLee.Infrastructure.Time;
+
+namespace YiHeLee.App;
+
+internal static class Program
+{
+    [STAThread]
+    private static void Main(string[] args)
+    {
+        ApplicationConfiguration.Initialize();
+
+        using var singleInstance = new SingleInstanceGuard(@"Local\YiHeLee.TrayApp.SingleInstance");
+        if (!singleInstance.IsPrimaryInstance)
+        {
+            MessageBox.Show("Yi He Lee 已在右下角系統匣執行。", "Yi He Lee",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var paths = new AppPaths();
+        var logger = new FileAppLogger(paths.LogDirectory);
+        var clock = new TaipeiClock();
+        var validationService = new SettingsValidationService();
+        var settingsStore = new JsonSettingsStore(paths.SettingsPath, validationService);
+        var repository = new SqliteYiHeLeeRepository(paths.DatabasePath, clock);
+        var userInteraction = new WinFormsUserInteraction();
+        var holdingRowExclusionService = new HoldingRowExclusionService();
+        var excelService = new ExcelWorkbookService(paths.BackupDirectory, logger, holdingRowExclusionService);
+        var cnyesCrawler = new CnyesTechnicalAlignmentCrawler(clock, logger);
+        var crawlerRegistry = new CrawlerRegistry([cnyesCrawler]);
+        var strategyService = new StrategyEvaluationService();
+        var dailyJobService = new DailyJobService(
+            clock,
+            settingsStore,
+            crawlerRegistry,
+            repository,
+            excelService,
+            userInteraction,
+            logger,
+            strategyService,
+            validationService);
+        var scheduleCoordinator = new DailyScheduleCoordinator(
+            dailyJobService,
+            clock,
+            settingsStore,
+            repository,
+            logger);
+        var startupManager = new WindowsStartupManager();
+
+        try
+        {
+            repository.InitializeAsync().GetAwaiter().GetResult();
+
+            using var context = new TrayApplicationContext(
+                args,
+                paths,
+                dailyJobService,
+                scheduleCoordinator,
+                settingsStore,
+                validationService,
+                repository,
+                userInteraction,
+                startupManager,
+                logger);
+            System.Windows.Forms.Application.Run(context);
+        }
+        catch (Exception ex)
+        {
+            logger.Error("程式啟動失敗。", ex);
+            MessageBox.Show(
+                $"Yi He Lee 啟動失敗：\r\n{ex.Message}\r\n\r\nLog：{paths.LogDirectory}",
+                "Yi He Lee－啟動失敗",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            try { scheduleCoordinator.StopAsync().GetAwaiter().GetResult(); } catch { }
+            try { cnyesCrawler.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
+        }
+    }
+}

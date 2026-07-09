@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+*.user
+*.suo
+logs/
+Data/
+Backups/
+settings.json
+*.db
+*.db-shm
+*.db-wal
+publish/
+TestResults/

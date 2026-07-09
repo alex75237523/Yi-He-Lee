@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>Yi He Lee</AssemblyName>
+    <RootNamespace>YiHeLee.App</RootNamespace>
+    <Platforms>AnyCPU;x64</Platforms>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\YiHeLee.Domain\YiHeLee.Domain.csproj" />
+    <ProjectReference Include="..\YiHeLee.Application\YiHeLee.Application.csproj" />
+    <ProjectReference Include="..\YiHeLee.Infrastructure\YiHeLee.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

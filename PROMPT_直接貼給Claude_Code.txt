@@ -1,0 +1,37 @@
+請接手目前資料夾內的 Yi He Lee 專案。
+
+第一步不要直接改程式。請先完整閱讀：
+
+1. AGENTS.md
+2. CLAUDE.md
+3. 00_START_HERE_給Claude_Code.md
+4. PROJECT_INSTRUCTIONS_鉅亨技術指標.md
+5. README.md
+6. docs/00_完整需求與目前狀況.md
+7. docs/01_需求與規則.md
+8. docs/02_架構與資料流程.md
+9. docs/03_資料庫結構.md
+10. docs/04_測試與驗收.md
+11. docs/07_可攜式SQLite規格.md
+12. docs/08_Claude_Code修復與實作任務.md
+13. docs/09_人工驗收與完成回報.md
+
+重要最終決定：
+
+- 使用 .NET 8 Windows Forms。
+- 資料庫維持 SQLite，使用 Microsoft.Data.Sqlite。
+- MSSQL、SQL Server Express LocalDB、MDF/LDF 全部取消，禁止改用。
+- SQLite、settings、Logs、Backups 預設放在 AppContext.BaseDirectory 下，整個發布資料夾必須可攜式。
+- 目前原始碼尚未成功編譯，請先實際執行 dotnet --info、restore、Debug Build、Release Build、test，整理錯誤後小步修正。
+- 不得未確認現況就重寫整個專案。
+- 不得直接 Push 到 main。
+
+請先輸出：
+
+1. 你讀到的完整需求摘要。
+2. 現有專案架構摘要。
+3. 目前 Git 狀態。
+4. Build／Test 實際錯誤分類。
+5. 預計修改檔案、風險及驗證方式。
+
+確認後直接開始修復，直到可以 Build、Test、Publish；無法做的 Windows／Excel／網站實機項目要明確列出人工驗證步驟。

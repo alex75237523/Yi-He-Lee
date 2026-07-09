@@ -35,7 +35,38 @@ public sealed class AppSettings
 
     public List<SourceDefinitionSetting> Sources { get; set; } = SourceDefinitionSetting.CreateDefaults();
 
+    /// <summary>官方（TWSE／TPEx）每日收盤價與均線計算相關設定。</summary>
+    public OfficialMarketDataSettings OfficialMarketData { get; set; } = new();
+
     public static AppSettings CreateDefault() => new();
+}
+
+/// <summary>
+/// 官方每日收盤價來源與均線計算設定。網址、逾時、重試與回看範圍可設定，
+/// 但「當日日期驗證」與「不得回抓前一交易日」規則不得由設定關閉。
+/// </summary>
+public sealed class OfficialMarketDataSettings
+{
+    /// <summary>TWSE 官方每日收盤行情（可指定日期）端點，{0} 置換為 yyyyMMdd。</summary>
+    public string TwseDailyCloseUrlTemplate { get; set; } =
+        "https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={0}&type=ALLBUT0999";
+
+    /// <summary>TPEx 官方每日收盤行情（可指定日期）端點，{0} 置換為民國年/月/日。</summary>
+    public string TpexDailyCloseUrlTemplate { get; set; } =
+        "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&d={0}&s=0,asc,0";
+
+    public int HttpTimeoutSeconds { get; set; } = 30;
+    public int HttpShortRetryCount { get; set; } = 3;
+    public int HttpShortRetryDelaySeconds { get; set; } = 5;
+
+    /// <summary>MA120 所需的最少有效交易日數。</summary>
+    public int RequiredTradingDaysForMa120 { get; set; } = 120;
+
+    /// <summary>歷史回補最大回看日曆日數，避免無限期往前抓取。</summary>
+    public int MaxBackfillLookbackCalendarDays { get; set; } = 280;
+
+    /// <summary>歷史回補逐日呼叫官方來源之間的節流間隔，避免大量平行轟炸官方網站。</summary>
+    public int BackfillThrottleMillisecondsBetweenRequests { get; set; } = 300;
 }
 
 /// <summary>可設定 N 個網址；每一個 ProviderKey 對應一個獨立爬蟲實作。</summary>

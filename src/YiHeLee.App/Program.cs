@@ -4,6 +4,7 @@ using YiHeLee.Infrastructure.Crawlers;
 using YiHeLee.Infrastructure.Data;
 using YiHeLee.Infrastructure.Excel;
 using YiHeLee.Infrastructure.Logging;
+using YiHeLee.Infrastructure.MarketData;
 using YiHeLee.Infrastructure.Settings;
 using YiHeLee.Infrastructure.Time;
 
@@ -30,20 +31,35 @@ internal static class Program
         var validationService = new SettingsValidationService();
         var settingsStore = new JsonSettingsStore(paths.SettingsPath, validationService);
         var repository = new SqliteYiHeLeeRepository(paths.DatabasePath, clock);
+        var marketDataRepository = new SqliteMarketDataRepository(paths.DatabasePath, clock);
         var userInteraction = new WinFormsUserInteraction();
         var holdingRowExclusionService = new HoldingRowExclusionService();
         var excelService = new ExcelWorkbookService(paths.BackupDirectory, logger, holdingRowExclusionService);
         var cnyesCrawler = new CnyesTechnicalAlignmentCrawler(clock, logger);
         var crawlerRegistry = new CrawlerRegistry([cnyesCrawler]);
+
+        // TWSE／TPEx 官方每日收盤價：獨立於鉅亨網爬蟲之外的 HTTP Provider，供均線改用官方資料計算。
+        using var marketDataHttpClient = new HttpClient();
+        var twseProvider = new TwseMarketDataProvider(marketDataHttpClient, logger, clock);
+        var tpexProvider = new TpexMarketDataProvider(marketDataHttpClient, logger, clock);
+        var marketPriceService = new MarketPriceService(twseProvider, tpexProvider, marketDataRepository, clock, logger);
+        var dailyMarketDataJob = new DailyMarketDataJob(marketPriceService);
+        var historicalBackfillJob = new HistoricalBackfillJob(marketPriceService);
+        var movingAverageService = new MovingAverageService(marketDataRepository);
+
         var strategyService = new StrategyEvaluationService();
         var dailyJobService = new DailyJobService(
             clock,
             settingsStore,
             crawlerRegistry,
             repository,
+            marketDataRepository,
             excelService,
             userInteraction,
             logger,
+            dailyMarketDataJob,
+            historicalBackfillJob,
+            movingAverageService,
             strategyService,
             validationService);
         var scheduleCoordinator = new DailyScheduleCoordinator(
@@ -57,6 +73,7 @@ internal static class Program
         try
         {
             repository.InitializeAsync().GetAwaiter().GetResult();
+            marketDataRepository.InitializeAsync().GetAwaiter().GetResult();
 
             using var context = new TrayApplicationContext(
                 args,

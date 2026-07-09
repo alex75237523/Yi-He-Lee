@@ -24,11 +24,12 @@
 
 ## 目前完成範圍
 
-- 固定來源：
+- 固定來源（多頭／空頭排列完整清單保存與交叉驗證，非正式均價來源）：
   - 股價多頭排列：`https://www.cnyes.com/twstock/a_technical4.aspx`
   - 股價空頭排列：`https://www.cnyes.com/twstock/a_technical5.aspx`
 - 每個固定來源都擷取集中市場及店頭市場。
-- 強制使用 `Asia/Taipei` 當日日期；頁面日期不是當日就拒絕寫入，不回抓前一交易日。
+- **正式均價來源（2026-07-09 起）**：上市股票改用臺灣證券交易所（TWSE）官方每日收盤價，上櫃股票改用證券櫃檯買賣中心（TPEx）官方每日收盤價；MA5／MA20／MA60／MA120 由本系統依有效交易日自行計算，不再採用鉅亨網頁面上的均價數字。詳見 `docs/03_資料庫結構.md`與`PROJECT_INSTRUCTIONS_鉅亨技術指標.md` 第九節。
+- 強制使用 `Asia/Taipei` 當日日期；頁面／來源日期不是當日就拒絕寫入，不回抓前一交易日。
 - SQLite 關聯式資料庫、唯一鍵、交易及重跑冪等機制。
 - 掃描所有客戶頁籤，不要求一定出現「自持股」文字。
 - 排除 `總表`、`每日五日均價策略`。
@@ -47,10 +48,10 @@
 
 ```text
 YiHeLee.App             WinForms、NotifyIcon、中央結果視窗、設定畫面
-YiHeLee.Application     排程流程、驗證、均線策略、介面
-YiHeLee.Infrastructure  Playwright 爬蟲、Excel Interop、SQLite、Log、設定檔
+YiHeLee.Application     排程流程、驗證、均線策略、官方價格協調（MarketPriceService）、介面
+YiHeLee.Infrastructure  Playwright 爬蟲、TWSE／TPEx HTTP Provider、Excel Interop、SQLite、Log、設定檔
 YiHeLee.Domain          Entity、Enum、設定模型
-tests/YiHeLee.Tests     策略、排除規則、設定、鉅亨表格 Parser 測試
+tests/YiHeLee.Tests     策略、排除規則、設定、鉅亨表格 Parser、TWSE／TPEx Parser、均線計算、官方價格服務、SQLite 測試
 ```
 
 ## 執行需求

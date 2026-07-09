@@ -2,6 +2,8 @@
 
 本文件為此專案所有 AI、Codex、Claude Code 與人工開發的強制規範。開始任何修改前，必須先閱讀目前程式碼、資料庫結構、既有排程與文件，再依本文件執行；不得未確認現況就直接重寫或更換技術棧。
 
+> **2026-07-09 更新（正式均價來源改為官方資料）：** 以下第一～八節（原始鉅亨網擷取規範）仍為歷史需求並持續適用於「多頭／空頭排列清單擷取」；但均線策略正式判斷與 Excel 輸出的 MA5／MA20／MA60／MA120 數值，**改由臺灣證券交易所（TWSE）與證券櫃檯買賣中心（TPEx）官方每日收盤價，由本系統依有效交易日自行計算**，鉅亨網兩來源不再作為正式均價來源，僅保留作多頭／空頭排列完整清單保存與交叉驗證。詳見本文件最末新增之「九、官方每日收盤價與均線（TWSE／TPEx）」一節。
+
 ## 一、每日資料擷取需求
 
 ### 1. 固定執行時間
@@ -210,3 +212,20 @@ Build／測試結果：
 風險提醒：
 下一步建議：
 ```
+
+## 九、官方每日收盤價與均線（TWSE／TPEx）（2026-07-09 新增）
+
+### 1. 資料來源分工
+
+- **鉅亨網**（`a_technical4.aspx` 多頭排列、`a_technical5.aspx` 空頭排列）：僅作多頭／空頭排列完整清單（集中＋店頭）保存與交叉驗證，**不再是正式均價來源**，不可刪除或停用。
+- **TWSE**（臺灣證券交易所）：上市股票官方每日收盤價。實測採用 `https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={yyyyMMdd}&type=ALLBUT0999`（可指定西元日期，回應含明確 `date` 欄位供驗證；非交易日回應 `stat` 明確為「查無資料」，無 `date` 欄位）。`openapi.twse.com.tw` 之 `STOCK_DAY_ALL` 雖有逐筆 `Date` 欄位可驗證，但不接受日期參數、僅回傳最新一筆，故改用／輔以上述可指定日期端點供每日驗證與歷史回補共用。
+- **TPEx**（證券櫃檯買賣中心）：上櫃股票官方每日收盤價。實測採用 `https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&d={民國年/月/日}&s=0,asc,0`。**重要實測發現**：此端點對非交易日或未來日期查詢，會靜默改回傳「最近一個有交易資料的日期」，HTTP 200、有資料列，但回應中的 `date` 與表格內 `date` 皆為該較早日期，**不會**回報錯誤或明確休市訊息。因此程式一律比對回應 `date` 是否等於 `targetDate`，不符時視為 `NotPublished`（除非同日 TWSE 已明確確認休市，才記為 `Holiday`），絕不可只憑 HTTP 200 或有資料列視為當日成功。`openapi.twex...` 的 `tpex_mainboard_daily_close_quotes` 同樣僅回傳最新一筆、不支援日期參數，故改用上述可指定日期端點。
+- **系統**：MA5／MA20／MA60／MA120 一律由本系統依 TWSE／TPEx 官方收盤價、依「有效交易日」（非日曆日）自行計算，中間過程不四捨五入，資料不足時對應欄位為 `null`。
+
+### 2. 分層與資料表
+
+詳見 `docs/02_架構與資料流程.md`「官方每日收盤價來源分層」與 `docs/03_資料庫結構.md`「官方每日收盤價與均線」：`ITwseMarketDataProvider`／`ITpexMarketDataProvider`、`IMarketPriceService`、`IMovingAverageService`、`DailyMarketDataJob`／`HistoricalBackfillJob`、`IMarketDataRepository`（`StockMaster`／`StockDailyPrice`／`StockMovingAverage`／`OfficialPriceBatch`）。
+
+### 3. 日期與休市規則
+
+與第一節鉅亨網規則相同精神：請求日期、來源回報日期、資料庫 `TradeDate`、`targetDate` 四者必須一致才可寫入正式資料；休市或尚未公布時記錄明確狀態並依設定化重試機制重試，絕不回抓前一交易日或用前一交易日資料補齊。歷史回補（`HistoricalBackfillJob`）與每日正式排程（`DailyMarketDataJob`）分開執行、分開記錄批次狀態；歷史回補只補建 `targetDate` 以前的資料，一律保存原始 `TradeDate`。

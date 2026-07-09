@@ -11,7 +11,7 @@ namespace YiHeLee.Infrastructure.Excel;
 
 public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 {
-    private const int OutputColumnCount = 17;
+    private const int OutputColumnCount = 19;
     private readonly string _backupDirectory;
     private readonly IAppLogger _logger;
     private readonly HoldingRowExclusionService _holdingRowExclusionService;
@@ -239,7 +239,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 .ToArray();
 
             var lastClearRow = Math.Max(10_000, ordered.Length + 20);
-            clearRange = worksheet.Range[$"A1:Q{lastClearRow}"];
+            clearRange = worksheet.Range[$"A1:S{lastClearRow}"];
             clearRange.Clear();
 
             var rowCount = Math.Max(5, ordered.Length + 4);
@@ -252,12 +252,13 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             matrix[1, 4] = "未取得技術指標筆數";
             matrix[1, 5] = ordered.Count(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing);
             matrix[2, 0] = "判斷規則";
-            matrix[2, 1] = "5日均價、20日均價或120日均價 <= 進場價/平均價；60日均價僅顯示。";
+            matrix[2, 1] = "5日均價、20日均價或120日均價 <= 進場價/平均價（依 TWSE／TPEx 官方收盤價計算）；60日均價僅顯示。";
 
             var headers = new[]
             {
                 "交易日期", "客戶頁籤", "客戶姓名", "原始列", "代碼", "股名", "進場價/平均價", "張數",
-                "收盤價", "5日均價", "20日均價", "60日均價", "120日均價", "觸發條件", "市場", "排列類型", "來源網址"
+                "收盤價", "5日均價", "20日均價", "60日均價", "120日均價", "觸發條件", "市場", "排列類型", "來源網址",
+                "資料來源", "計算時間"
             };
             for (var column = 0; column < headers.Length; column++)
             {
@@ -285,18 +286,20 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 matrix[row, 14] = ToMarketText(alert.MarketType);
                 matrix[row, 15] = ToIndicatorText(alert.IndicatorType);
                 matrix[row, 16] = alert.SourceUrl;
+                matrix[row, 17] = alert.PriceSourceProvider ?? string.Empty;
+                matrix[row, 18] = alert.CalculatedAt?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? string.Empty;
             }
 
-            dataRange = worksheet.Range[$"A1:Q{rowCount}"];
+            dataRange = worksheet.Range[$"A1:S{rowCount}"];
             dataRange.Value2 = matrix;
-            titleRange = worksheet.Range["A1:Q1"];
+            titleRange = worksheet.Range["A1:S1"];
             titleRange.Merge();
             titleRange.Font.Bold = true;
             titleRange.Font.Size = 15;
             titleRange.HorizontalAlignment = ExcelInterop.XlHAlign.xlHAlignCenter;
             titleRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.LightBlue);
 
-            headerRange = worksheet.Range["A4:Q4"];
+            headerRange = worksheet.Range["A4:S4"];
             headerRange.Font.Bold = true;
             headerRange.HorizontalAlignment = ExcelInterop.XlHAlign.xlHAlignCenter;
             headerRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.FromArgb(189, 215, 238));
@@ -337,7 +340,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         ExcelInterop.Range? missingRange = null;
         try
         {
-            allRange = worksheet.Range[$"A4:Q{rowCount}"];
+            allRange = worksheet.Range[$"A4:S{rowCount}"];
             allRange.Borders.LineStyle = ExcelInterop.XlLineStyle.xlContinuous;
             allRange.VerticalAlignment = ExcelInterop.XlVAlign.xlVAlignCenter;
             allRange.WrapText = true;
@@ -364,13 +367,15 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             SetColumnWidth(worksheet, "O", 12);
             SetColumnWidth(worksheet, "P", 14);
             SetColumnWidth(worksheet, "Q", 48);
+            SetColumnWidth(worksheet, "R", 12);
+            SetColumnWidth(worksheet, "S", 20);
 
             var firstMissingIndex = alerts.ToList().FindIndex(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing);
             if (firstMissingIndex >= 0)
             {
                 var startRow = firstMissingIndex + 5;
                 var endRow = alerts.Count + 4;
-                missingRange = worksheet.Range[$"A{startRow}:Q{endRow}"];
+                missingRange = worksheet.Range[$"A{startRow}:S{endRow}"];
                 missingRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.LightYellow);
             }
         }

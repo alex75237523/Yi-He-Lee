@@ -18,7 +18,7 @@ public sealed class MarketPriceServiceTests
         var twse = FakeTwseProvider.WithMismatchedDate(Weekday.AddDays(-1));
         var tpex = FakeTpexProvider.WithMatchingDate();
         var repository = new FakeMarketDataRepository();
-        var service = new MarketPriceService(twse, tpex, repository, new FakeClock(Weekday), new FakeLogger());
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
 
         var results = await service.FetchAndSaveDailyPricesAsync(Weekday, Settings, CancellationToken.None);
 
@@ -34,7 +34,7 @@ public sealed class MarketPriceServiceTests
         var twse = FakeTwseProvider.WithMatchingDate();
         var tpex = FakeTpexProvider.WithMismatchedDate(Weekday.AddDays(-1));
         var repository = new FakeMarketDataRepository();
-        var service = new MarketPriceService(twse, tpex, repository, new FakeClock(Weekday), new FakeLogger());
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
 
         var results = await service.FetchAndSaveDailyPricesAsync(Weekday, Settings, CancellationToken.None);
 
@@ -49,7 +49,7 @@ public sealed class MarketPriceServiceTests
         var twse = FakeTwseProvider.WithMatchingDate();
         var tpex = FakeTpexProvider.WithMatchingDate();
         var repository = new FakeMarketDataRepository();
-        var service = new MarketPriceService(twse, tpex, repository, new FakeClock(Weekend), new FakeLogger());
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekend), new FakeLogger());
 
         var results = await service.FetchAndSaveDailyPricesAsync(Weekend, Settings, CancellationToken.None);
 
@@ -64,7 +64,7 @@ public sealed class MarketPriceServiceTests
         var twse = FakeTwseProvider.WithExplicitHoliday();
         var tpex = FakeTpexProvider.WithMismatchedDate(Weekday.AddDays(-3)); // 靜默回退到更早的交易日
         var repository = new FakeMarketDataRepository();
-        var service = new MarketPriceService(twse, tpex, repository, new FakeClock(Weekday), new FakeLogger());
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
 
         var results = await service.FetchAndSaveDailyPricesAsync(Weekday, Settings, CancellationToken.None);
 
@@ -77,7 +77,7 @@ public sealed class MarketPriceServiceTests
         var twse = FakeTwseProvider.WithMatchingDate();
         var tpex = FakeTpexProvider.WithMatchingDate();
         var repository = new FakeMarketDataRepository();
-        var service = new MarketPriceService(twse, tpex, repository, new FakeClock(Weekday), new FakeLogger());
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
 
         var results = await service.FetchAndSaveDailyPricesAsync(Weekday, Settings, CancellationToken.None);
 
@@ -92,7 +92,7 @@ public sealed class MarketPriceServiceTests
         var twse = FakeTwseProvider.WithMatchingDate();
         var tpex = FakeTpexProvider.WithMatchingDate();
         var repository = new FakeMarketDataRepository();
-        var service = new MarketPriceService(twse, tpex, repository, new FakeClock(Weekday), new FakeLogger());
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
 
         await service.FetchAndSaveDailyPricesAsync(Weekday, Settings, CancellationToken.None);
         await service.FetchAndSaveDailyPricesAsync(Weekday, Settings, CancellationToken.None);
@@ -113,13 +113,45 @@ public sealed class MarketPriceServiceTests
             MaxBackfillLookbackCalendarDays = 10,
             BackfillThrottleMillisecondsBetweenRequests = 0
         };
-        var service = new MarketPriceService(twse, tpex, repository, new FakeClock(Weekday), new FakeLogger());
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
 
         await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None);
 
         Assert.DoesNotContain(Weekday, twse.RequestedDates);
         Assert.All(twse.RequestedDates, d => Assert.True(d < Weekday));
         Assert.All(repository.SavedPrices, p => Assert.True(p.TradeDate < Weekday));
+    }
+
+    [Fact]
+    public async Task 興櫃當日快照日期等於targetDate時單獨寫入成功()
+    {
+        var twse = FakeTwseProvider.WithMatchingDate();
+        var tpex = FakeTpexProvider.WithMatchingDate();
+        var emerging = FakeEmergingProvider.WithMatchingDate();
+        var repository = new FakeMarketDataRepository();
+        var service = new MarketPriceService(twse, tpex, emerging, repository, new FakeClock(Weekday), new FakeLogger());
+
+        var summary = await service.FetchAndSaveSingleAsync(
+            OfficialPriceJobType.DailyMarketData, Weekday, MarketType.Emerging, Settings, CancellationToken.None);
+
+        Assert.Equal(OfficialPriceBatchStatus.Succeeded, summary.Status);
+        Assert.Contains(repository.SavedPrices, x => x.SourceProvider == "TPEx興櫃" && x.TradeDate == Weekday && x.MarketType == MarketType.Emerging);
+    }
+
+    [Fact]
+    public async Task 興櫃快照日期不等於targetDate時拒絕寫入且標記為尚未公布()
+    {
+        var twse = FakeTwseProvider.WithMatchingDate();
+        var tpex = FakeTpexProvider.WithMatchingDate();
+        var emerging = FakeEmergingProvider.WithMismatchedDate(Weekday.AddDays(-1));
+        var repository = new FakeMarketDataRepository();
+        var service = new MarketPriceService(twse, tpex, emerging, repository, new FakeClock(Weekday), new FakeLogger());
+
+        var summary = await service.FetchAndSaveSingleAsync(
+            OfficialPriceJobType.DailyMarketData, Weekday, MarketType.Emerging, Settings, CancellationToken.None);
+
+        Assert.Equal(OfficialPriceBatchStatus.NotPublished, summary.Status);
+        Assert.DoesNotContain(repository.SavedPrices, x => x.SourceProvider == "TPEx興櫃");
     }
 
     private sealed class FakeClock : IClock
@@ -180,14 +212,37 @@ public sealed class MarketPriceServiceTests
         }
     }
 
+    private sealed class FakeEmergingProvider : IEmergingMarketDataProvider
+    {
+        private readonly Func<DateOnly, OfficialPriceFetchResult> _factory;
+        public List<DateOnly> RequestedDates { get; } = [];
+        public int CallCount { get; private set; }
+        public string SourceProviderName => "TPEx興櫃";
+
+        private FakeEmergingProvider(Func<DateOnly, OfficialPriceFetchResult> factory) => _factory = factory;
+
+        public static FakeEmergingProvider WithMatchingDate() => new(date => Success(MarketType.Emerging, "TPEx興櫃", date, date));
+        public static FakeEmergingProvider WithMismatchedDate(DateOnly returnedDate) => new(date => Success(MarketType.Emerging, "TPEx興櫃", date, returnedDate));
+
+        public Task<OfficialPriceFetchResult> FetchDailyCloseAsync(DateOnly requestedDate, OfficialMarketDataSettings settings, CancellationToken cancellationToken)
+        {
+            CallCount++;
+            RequestedDates.Add(requestedDate);
+            return Task.FromResult(_factory(requestedDate));
+        }
+    }
+
     private static OfficialPriceFetchResult Success(MarketType marketType, string provider, DateOnly requestedDate, DateOnly sourceDate)
         => new(
             marketType,
             requestedDate,
             sourceDate,
-            [marketType == MarketType.Listed
-                ? new OfficialPriceQuote("2330", "台積電", 900m)
-                : new OfficialPriceQuote("5285", "宜鼎", 515m)],
+            [marketType switch
+            {
+                MarketType.Listed => new OfficialPriceQuote("2330", "台積電", 900m),
+                MarketType.Emerging => new OfficialPriceQuote("4573", "高明鐵", 408m),
+                _ => new OfficialPriceQuote("5285", "宜鼎", 515m)
+            }],
             false,
             provider,
             $"https://example.invalid/{provider}",
@@ -248,5 +303,11 @@ public sealed class MarketPriceServiceTests
 
         public Task<bool> HasSucceededBatchAsync(OfficialPriceJobType jobType, DateOnly targetDate, string sourceProvider, CancellationToken cancellationToken)
             => Task.FromResult(_succeededBatches.Contains((jobType, targetDate, sourceProvider)));
+
+        public Task<StockDailyPriceQueryResult> QueryDailyPricesAsync(StockDailyPriceQueryFilter filter, CancellationToken cancellationToken)
+            => Task.FromResult(new StockDailyPriceQueryResult([], 0, filter.Page, filter.PageSize));
+
+        public Task<DateOnly?> GetLatestTradeDateAsync(CancellationToken cancellationToken)
+            => Task.FromResult(SavedPrices.Count == 0 ? (DateOnly?)null : SavedPrices.Max(x => x.TradeDate));
     }
 }

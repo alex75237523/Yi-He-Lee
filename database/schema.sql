@@ -135,15 +135,26 @@ CREATE TABLE IF NOT EXISTS StockMaster (
 );
 
 -- 官方每日收盤價：唯一鍵為 StockId + TradeDate，同日重跑會更新既有列而非新增。
+-- Open/High/Low/TradeVolume/TradeValue/TransactionCount/PriceChange 為選填欄位：
+-- 目前 TWSE／TPEx Provider 僅穩定解析收盤價，其餘欄位保持 NULL，不得以任何方式偽造數值。
+-- 既有資料庫升級時由程式以 PRAGMA table_info 檢查後用 ALTER TABLE ADD COLUMN 安全新增這些欄位。
 CREATE TABLE IF NOT EXISTS StockDailyPrice (
     Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 流水號
     StockId INTEGER NOT NULL,                        -- 關聯 StockMaster.Id
     TradeDate TEXT NOT NULL,                         -- 交易日期（yyyy-MM-dd，官方驗證後之正式交易日）
+    OpenPrice NUMERIC NULL,                          -- 開盤價（選填）
+    HighPrice NUMERIC NULL,                          -- 最高價（選填）
+    LowPrice NUMERIC NULL,                           -- 最低價（選填）
     ClosePrice NUMERIC NOT NULL,                     -- 官方收盤價
+    TradeVolume NUMERIC NULL,                        -- 成交股數（選填）
+    TradeValue NUMERIC NULL,                         -- 成交金額（選填）
+    TransactionCount INTEGER NULL,                   -- 成交筆數（選填）
+    PriceChange NUMERIC NULL,                        -- 漲跌價差（選填）
     SourceProvider TEXT NOT NULL,                    -- 官方來源：TWSE／TPEx
     SourceUrl TEXT NOT NULL,                         -- 來源網址
     SourceDataDate TEXT NOT NULL,                    -- 來源回報的資料日期（驗證通過後應等於 TradeDate）
     FetchBatchId TEXT NOT NULL,                      -- 對應 OfficialPriceBatch.BatchId
+    IsOfficial INTEGER NOT NULL DEFAULT 1,           -- 是否官方資料，本表僅保存官方來源固定為真
     FetchedAt TEXT NOT NULL,                         -- 擷取時間
     CreatedAt TEXT NOT NULL,                         -- 建立時間
     UpdatedAt TEXT NOT NULL,                         -- 最後更新時間
@@ -151,6 +162,7 @@ CREATE TABLE IF NOT EXISTS StockDailyPrice (
     CONSTRAINT UQ_StockDailyPrice UNIQUE (StockId, TradeDate)
 );
 CREATE INDEX IF NOT EXISTS IX_StockDailyPrice_TradeDate ON StockDailyPrice(TradeDate);
+CREATE INDEX IF NOT EXISTS IX_StockMaster_MarketType_Code ON StockMaster(MarketType, StockCode);
 
 -- 均線計算結果快取：由本系統依官方收盤價自行計算，不得以鉅亨網數值取代。
 CREATE TABLE IF NOT EXISTS StockMovingAverage (
@@ -193,3 +205,85 @@ CREATE TABLE IF NOT EXISTS OfficialPriceBatch (
     UpdatedAt TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS IX_OfficialPriceBatch_Target ON OfficialPriceBatch(TargetDate, SourceProvider, JobType);
+
+-- =====================================================================
+-- 以下為「歷史收盤價」查詢畫面／使用者手動「立即回補」相關資料表（2026-07-09 新增）。
+-- 一個抓取工作＝一個市場＋一個交易日期；本區塊只記錄使用者觸發批次的進度，
+-- 實際抓取／解析／驗證／Upsert 一律重用上方 IMarketPriceService／StockDailyPrice 既有邏輯。
+-- =====================================================================
+
+-- 使用者手動觸發的歷史收盤價回補批次：一次「立即回補」對應一筆。
+CREATE TABLE IF NOT EXISTS StockPriceImportJob (
+    Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,       -- 批次編號
+    JobType INTEGER NOT NULL,                             -- 工作類型（固定為2歷史回補）
+    RequestedTradingDays INTEGER NOT NULL,                 -- 要求的有效交易日數
+    TargetDate TEXT NULL,                                  -- 回溯起算的基準日（觸發當下台北日期）
+    TimeZoneId TEXT NOT NULL,                              -- 時區，固定 Asia/Taipei
+    TotalTasks INTEGER NOT NULL DEFAULT 0,                 -- 總工作數
+    CompletedTasks INTEGER NOT NULL DEFAULT 0,             -- 已完成工作數（含成功／休市／失敗／取消）
+    SuccessTasks INTEGER NOT NULL DEFAULT 0,               -- 成功工作數
+    FailedTasks INTEGER NOT NULL DEFAULT 0,                -- 失敗工作數
+    SkippedTasks INTEGER NOT NULL DEFAULT 0,               -- 略過工作數（休市等合法零筆）
+    TotalRows INTEGER NOT NULL DEFAULT 0,                  -- 總資料筆數
+    ProcessedRows INTEGER NOT NULL DEFAULT 0,              -- 已處理筆數
+    InsertedRows INTEGER NOT NULL DEFAULT 0,               -- 新增筆數
+    UpdatedRows INTEGER NOT NULL DEFAULT 0,                -- 更新筆數
+    SkippedRows INTEGER NOT NULL DEFAULT 0,                -- 略過筆數
+    FailedRows INTEGER NOT NULL DEFAULT 0,                 -- 失敗筆數
+    ProgressPercent NUMERIC NOT NULL DEFAULT 0,            -- 整體進度百分比
+    Status INTEGER NOT NULL,                               -- 執行狀態
+    StartedAt TEXT NULL,                                   -- 開始時間
+    CompletedAt TEXT NULL,                                 -- 完成時間
+    ErrorMessage TEXT NULL,                                -- 錯誤訊息
+    CreatedAt TEXT NOT NULL,
+    UpdatedAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS IX_StockPriceImportJob_Status ON StockPriceImportJob(Status, CreatedAt);
+
+-- 一個抓取工作＝一個市場＋一個交易日期；每一列完整下載、解析、驗證後才會成批寫入 StockDailyPrice。
+CREATE TABLE IF NOT EXISTS StockPriceImportTask (
+    Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,       -- 工作編號
+    JobId INTEGER NOT NULL,                               -- 所屬批次編號
+    MarketType INTEGER NOT NULL,                          -- 1上市(TWSE)／2上櫃(TPEx)
+    RequestedDate TEXT NOT NULL,                          -- 請求日期
+    ActualTradeDate TEXT NULL,                            -- 官方回報的實際交易日期（可能與請求日期不同）
+    SourceUrl TEXT NULL,                                  -- 來源網址
+    Status INTEGER NOT NULL,                              -- 工作狀態
+    RetryCount INTEGER NOT NULL DEFAULT 0,                -- 重試次數
+    TotalRows INTEGER NOT NULL DEFAULT 0,                 -- 總筆數
+    ProcessedRows INTEGER NOT NULL DEFAULT 0,             -- 已處理筆數
+    InsertedRows INTEGER NOT NULL DEFAULT 0,              -- 新增筆數
+    UpdatedRows INTEGER NOT NULL DEFAULT 0,               -- 更新筆數
+    SkippedRows INTEGER NOT NULL DEFAULT 0,               -- 略過筆數
+    FailedRows INTEGER NOT NULL DEFAULT 0,                -- 失敗筆數
+    ProgressPercent NUMERIC NOT NULL DEFAULT 0,           -- 工作進度百分比
+    StartedAt TEXT NULL,                                  -- 開始時間
+    CompletedAt TEXT NULL,                                -- 完成時間
+    ErrorMessage TEXT NULL,                               -- 錯誤訊息
+    CreatedAt TEXT NOT NULL,
+    UpdatedAt TEXT NOT NULL,
+    FOREIGN KEY (JobId) REFERENCES StockPriceImportJob(Id),
+    CONSTRAINT UQ_StockPriceImportTask UNIQUE (JobId, MarketType, RequestedDate)
+);
+CREATE INDEX IF NOT EXISTS IX_StockPriceImportTask_Job_Status ON StockPriceImportTask(JobId, Status);
+
+-- 鉅亨網多頭／空頭排列與官方自算均線的交叉驗證紀錄；僅作驗證追查，不得覆蓋或取代官方資料。
+CREATE TABLE IF NOT EXISTS CnyesCrossValidation (
+    Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 流水號
+    TradeDate TEXT NOT NULL,                         -- 交易日期
+    MarketType INTEGER NOT NULL,                     -- 1上市／2上櫃
+    StockCode TEXT NOT NULL,                         -- 股票代碼
+    WindowDays INTEGER NOT NULL,                     -- 比對的均線天數（5／20／60／120；0表示非特定天數的整體狀態）
+    CalculatedValue NUMERIC NULL,                    -- 本系統依官方收盤價自算的均價
+    CnyesValue NUMERIC NULL,                         -- 鉅亨網頁面顯示的均價
+    Difference NUMERIC NULL,                         -- 絕對差異
+    Outcome INTEGER NOT NULL,                        -- 驗證結果（相符／差異／不適用／日期不符／資料不足／來源失敗）
+    CnyesDataDate TEXT NULL,                         -- 鉅亨網頁面實際顯示的資料日期
+    SourceUrl TEXT NULL,                             -- 鉅亨網來源網址
+    ValidatedAt TEXT NOT NULL,                       -- 驗證時間
+    ErrorMessage TEXT NULL,                          -- 錯誤訊息
+    CreatedAt TEXT NOT NULL,
+    UpdatedAt TEXT NOT NULL,
+    CONSTRAINT UQ_CnyesCrossValidation UNIQUE (TradeDate, MarketType, StockCode, WindowDays)
+);
+CREATE INDEX IF NOT EXISTS IX_CnyesCrossValidation_TradeDate ON CnyesCrossValidation(TradeDate);

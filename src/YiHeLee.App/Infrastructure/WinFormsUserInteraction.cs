@@ -7,9 +7,14 @@ internal sealed class WinFormsUserInteraction : IUserInteraction
 {
     private Control? _dispatcher;
 
-    public event Action<string>? StatusChanged;
+    public event Action<string, int>? StatusChanged;
+    public event Action<string>? ProgressDetailChanged;
     public event Action<JobRunSummary>? Succeeded;
     public event Action<JobRunSummary>? Failed;
+
+    /// <summary>由 TrayApplicationContext 掛上，改在常駐主視窗內以內嵌畫面確認，不再另外跳出對話框。
+    /// 未掛上時（例如主視窗尚未初始化）退回原本的 MessageBox，確保安全確認不會被跳過。</summary>
+    public Func<CancellationToken, Task<bool>>? ExcelSafetyConfirmationHandler { get; set; }
 
     public void AttachDispatcher(Control dispatcher)
     {
@@ -21,8 +26,13 @@ internal sealed class WinFormsUserInteraction : IUserInteraction
     }
 
     public Task<bool> ConfirmExcelSafetyAsync(CancellationToken cancellationToken)
-        => InvokeAsync(() =>
+        => InvokeAsync(async () =>
         {
+            if (ExcelSafetyConfirmationHandler is not null)
+            {
+                return await ExcelSafetyConfirmationHandler(cancellationToken).ConfigureAwait(true);
+            }
+
             const string message =
                 "系統即將讀取並更新 Excel。\r\n\r\n" +
                 "請先確認：\r\n" +
@@ -36,7 +46,8 @@ internal sealed class WinFormsUserInteraction : IUserInteraction
                 MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.OK;
         }, cancellationToken);
 
-    public void ShowStatus(string message) => Post(() => StatusChanged?.Invoke(message));
+    public void ShowStatus(string message, int percentComplete = 0) => Post(() => StatusChanged?.Invoke(message, percentComplete));
+    public void ShowProgressDetail(string message) => Post(() => ProgressDetailChanged?.Invoke(message));
     public void ShowSuccess(JobRunSummary summary) => Post(() => Succeeded?.Invoke(summary));
     public void ShowFailure(JobRunSummary summary) => Post(() => Failed?.Invoke(summary));
 
@@ -48,6 +59,19 @@ internal sealed class WinFormsUserInteraction : IUserInteraction
         dispatcher.BeginInvoke(new Action(() =>
         {
             try { completion.TrySetResult(action()); }
+            catch (Exception ex) { completion.TrySetException(ex); }
+        }));
+        return completion.Task;
+    }
+
+    private Task<T> InvokeAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken)
+    {
+        var dispatcher = _dispatcher ?? throw new InvalidOperationException("UI dispatcher 尚未初始化。");
+        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+        dispatcher.BeginInvoke(new Action(async () =>
+        {
+            try { completion.TrySetResult(await action().ConfigureAwait(true)); }
             catch (Exception ex) { completion.TrySetException(ex); }
         }));
         return completion.Task;

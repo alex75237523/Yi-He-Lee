@@ -11,7 +11,7 @@ namespace YiHeLee.Infrastructure.Excel;
 
 public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 {
-    private const int OutputColumnCount = 19;
+    private const int OutputColumnCount = 7;
     private readonly string _backupDirectory;
     private readonly IAppLogger _logger;
     private readonly HoldingRowExclusionService _holdingRowExclusionService;
@@ -59,7 +59,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         ExcelInterop.Sheets? worksheets = null;
         try
         {
-            workbook = ExcelRunningObjectResolver.FindOpenWorkbook(settings.WorkbookPath);
+            workbook = ExcelRunningObjectResolver.FindOpenWorkbook(settings.WorkbookPath, settings.AutoOpenWorkbookIfClosed);
             application = workbook.Application;
             EnsureExcelAvailable(application, workbook);
             worksheets = workbook.Worksheets;
@@ -209,12 +209,10 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         ExcelInterop.Worksheet? worksheet = null;
         ExcelInterop.Range? clearRange = null;
         ExcelInterop.Range? dataRange = null;
-        ExcelInterop.Range? titleRange = null;
         ExcelInterop.Range? headerRange = null;
-        ExcelInterop.Range? verificationCell = null;
         try
         {
-            workbook = ExcelRunningObjectResolver.FindOpenWorkbook(settings.WorkbookPath);
+            workbook = ExcelRunningObjectResolver.FindOpenWorkbook(settings.WorkbookPath, settings.AutoOpenWorkbookIfClosed);
             application = workbook.Application;
             EnsureExcelAvailable(application, workbook);
             if (settings.RequireBackupBeforeExcelWrite)
@@ -239,67 +237,42 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 .ToArray();
 
             var lastClearRow = Math.Max(10_000, ordered.Length + 20);
-            clearRange = worksheet.Range[$"A1:S{lastClearRow}"];
+            clearRange = worksheet.Range[$"A1:G{lastClearRow}"];
+            // 先解除範圍內殘留的合併儲存格，否則邊界跨出 A:G 的合併儲存格會讓 Clear() 拋出
+            // COMException 0x800A03EC（無法對合併儲存格執行該動作）。MergeCells 在範圍內合併狀態
+            // 不一致時會回傳 DBNull，因此不判斷該屬性，直接呼叫 UnMerge()（未合併時為無動作）。
+            clearRange.UnMerge();
             clearRange.Clear();
 
-            var rowCount = Math.Max(5, ordered.Length + 4);
+            var rowCount = Math.Max(2, ordered.Length + 1);
             var matrix = new object[rowCount, OutputColumnCount];
-            matrix[0, 0] = "Yi He Lee－每日五日均價策略";
-            matrix[1, 0] = "資料日期";
-            matrix[1, 1] = targetDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            matrix[1, 2] = "策略通知筆數";
-            matrix[1, 3] = ordered.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered);
-            matrix[1, 4] = "未取得技術指標筆數";
-            matrix[1, 5] = ordered.Count(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing);
-            matrix[2, 0] = "判斷規則";
-            matrix[2, 1] = "5日均價、20日均價或120日均價 <= 進場價/平均價（依 TWSE／TPEx 官方收盤價計算）；60日均價僅顯示。";
 
             var headers = new[]
             {
-                "交易日期", "客戶頁籤", "客戶姓名", "原始列", "代碼", "股名", "進場價/平均價", "張數",
-                "收盤價", "5日均價", "20日均價", "60日均價", "120日均價", "觸發條件", "市場", "排列類型", "來源網址",
-                "資料來源", "計算時間"
+                "代碼", "名稱", "收盤價", "5日均價", "20日均價", "60日均價", "120日均價"
             };
             for (var column = 0; column < headers.Length; column++)
             {
-                matrix[3, column] = headers[column];
+                matrix[0, column] = headers[column];
             }
 
             for (var index = 0; index < ordered.Length; index++)
             {
                 var alert = ordered[index];
-                var row = index + 4;
-                matrix[row, 0] = alert.TradeDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                matrix[row, 1] = alert.SheetName;
-                matrix[row, 2] = alert.CustomerName;
-                matrix[row, 3] = alert.ExcelRow;
-                matrix[row, 4] = alert.StockCode;
-                matrix[row, 5] = alert.StockName;
-                matrix[row, 6] = alert.EntryAveragePrice;
-                matrix[row, 7] = alert.Quantity;
-                matrix[row, 8] = alert.ClosePrice;
-                matrix[row, 9] = alert.MovingAverage5;
-                matrix[row, 10] = alert.MovingAverage20;
-                matrix[row, 11] = alert.MovingAverage60;
-                matrix[row, 12] = alert.MovingAverage120;
-                matrix[row, 13] = alert.TriggerDescription;
-                matrix[row, 14] = ToMarketText(alert.MarketType);
-                matrix[row, 15] = ToIndicatorText(alert.IndicatorType);
-                matrix[row, 16] = alert.SourceUrl;
-                matrix[row, 17] = alert.PriceSourceProvider ?? string.Empty;
-                matrix[row, 18] = alert.CalculatedAt?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? string.Empty;
+                var row = index + 1;
+                matrix[row, 0] = alert.StockCode;
+                matrix[row, 1] = alert.StockName;
+                matrix[row, 2] = alert.ClosePrice;
+                matrix[row, 3] = alert.MovingAverage5;
+                matrix[row, 4] = alert.MovingAverage20;
+                matrix[row, 5] = alert.MovingAverage60;
+                matrix[row, 6] = alert.MovingAverage120;
             }
 
-            dataRange = worksheet.Range[$"A1:S{rowCount}"];
+            dataRange = worksheet.Range[$"A1:G{rowCount}"];
             dataRange.Value2 = matrix;
-            titleRange = worksheet.Range["A1:S1"];
-            titleRange.Merge();
-            titleRange.Font.Bold = true;
-            titleRange.Font.Size = 15;
-            titleRange.HorizontalAlignment = ExcelInterop.XlHAlign.xlHAlignCenter;
-            titleRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.LightBlue);
 
-            headerRange = worksheet.Range["A4:S4"];
+            headerRange = worksheet.Range["A1:G1"];
             headerRange.Font.Bold = true;
             headerRange.HorizontalAlignment = ExcelInterop.XlHAlign.xlHAlignCenter;
             headerRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.FromArgb(189, 215, 238));
@@ -307,22 +280,11 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 
             FormatOutputColumns(worksheet, rowCount, ordered);
 
-            // 寫入後先驗證關鍵統計，再儲存整份活頁簿。
-            verificationCell = (ExcelInterop.Range)worksheet.Cells[2, 4];
-            var writtenAlertCount = Convert.ToInt32(verificationCell.Value2 ?? 0, CultureInfo.InvariantCulture);
-            var expectedAlertCount = ordered.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered);
-            if (writtenAlertCount != expectedAlertCount)
-            {
-                throw new InvalidOperationException($"Excel 寫入驗證失敗：預期通知 {expectedAlertCount} 筆，實際 {writtenAlertCount} 筆。");
-            }
-
             workbook.Save();
         }
         finally
         {
-            ComObject.FinalRelease(verificationCell);
             ComObject.FinalRelease(headerRange);
-            ComObject.FinalRelease(titleRange);
             ComObject.FinalRelease(dataRange);
             ComObject.FinalRelease(clearRange);
             ComObject.FinalRelease(worksheet);
@@ -340,42 +302,30 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         ExcelInterop.Range? missingRange = null;
         try
         {
-            allRange = worksheet.Range[$"A4:S{rowCount}"];
+            allRange = worksheet.Range[$"A1:G{rowCount}"];
             allRange.Borders.LineStyle = ExcelInterop.XlLineStyle.xlContinuous;
             allRange.VerticalAlignment = ExcelInterop.XlVAlign.xlVAlignCenter;
             allRange.WrapText = true;
 
-            codeColumn = worksheet.Range[$"E5:E{rowCount}"];
+            codeColumn = worksheet.Range[$"A2:A{rowCount}"];
             codeColumn.NumberFormat = "@";
-            numericRange = worksheet.Range[$"G5:M{rowCount}"];
+            numericRange = worksheet.Range[$"C2:G{rowCount}"];
             numericRange.NumberFormat = "0.00";
 
             SetColumnWidth(worksheet, "A", 12);
             SetColumnWidth(worksheet, "B", 18);
-            SetColumnWidth(worksheet, "C", 14);
-            SetColumnWidth(worksheet, "D", 9);
-            SetColumnWidth(worksheet, "E", 12);
-            SetColumnWidth(worksheet, "F", 18);
-            SetColumnWidth(worksheet, "G", 15);
-            SetColumnWidth(worksheet, "H", 9);
-            SetColumnWidth(worksheet, "I", 11);
-            SetColumnWidth(worksheet, "J", 11);
-            SetColumnWidth(worksheet, "K", 11);
-            SetColumnWidth(worksheet, "L", 11);
-            SetColumnWidth(worksheet, "M", 12);
-            SetColumnWidth(worksheet, "N", 42);
-            SetColumnWidth(worksheet, "O", 12);
-            SetColumnWidth(worksheet, "P", 14);
-            SetColumnWidth(worksheet, "Q", 48);
-            SetColumnWidth(worksheet, "R", 12);
-            SetColumnWidth(worksheet, "S", 20);
+            SetColumnWidth(worksheet, "C", 11);
+            SetColumnWidth(worksheet, "D", 11);
+            SetColumnWidth(worksheet, "E", 11);
+            SetColumnWidth(worksheet, "F", 11);
+            SetColumnWidth(worksheet, "G", 12);
 
             var firstMissingIndex = alerts.ToList().FindIndex(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing);
             if (firstMissingIndex >= 0)
             {
-                var startRow = firstMissingIndex + 5;
-                var endRow = alerts.Count + 4;
-                missingRange = worksheet.Range[$"A{startRow}:S{endRow}"];
+                var startRow = firstMissingIndex + 2;
+                var endRow = alerts.Count + 1;
+                missingRange = worksheet.Range[$"A{startRow}:G{endRow}"];
                 missingRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.LightYellow);
             }
         }
@@ -512,6 +462,25 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 {
                     throw;
                 }
+                catch (ExcelWorkbookResolutionException ex) when (!ex.IsRetryable)
+                {
+                    _logger.Warning(ex.DiagnosticMessage);
+                    throw new NonRetryableExcelJobException(
+                        JobStatus.ExcelUnavailable,
+                        ex.Message,
+                        ex);
+                }
+                catch (ExcelWorkbookResolutionException ex) when (attempt < maxAttempts)
+                {
+                    lastError = ex;
+                    _logger.Warning(ex.DiagnosticMessage);
+                }
+                catch (ExcelWorkbookResolutionException ex)
+                {
+                    lastError = ex;
+                    _logger.Warning(ex.DiagnosticMessage);
+                    break;
+                }
                 catch (ExcelBusyException ex) when (attempt < maxAttempts)
                 {
                     lastError = ex;
@@ -533,13 +502,21 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                         ex);
                 }
 
-                _logger.Warning($"{operationName}第 {attempt} 次遇到 Excel 忙碌，等待後重試。原因：{lastError?.Message}");
+                _logger.Warning($"{operationName}第 {attempt} 次暫時無法使用 Excel，等待後重試。原因：{lastError?.Message}");
                 Thread.Sleep(TimeSpan.FromSeconds(Math.Max(1, settings.ExcelShortRetryDelaySeconds)));
+            }
+
+            if (lastError is ExcelWorkbookResolutionException resolutionException)
+            {
+                throw new RetryableExcelJobException(
+                    GetExcelFailureStatus(operationName),
+                    $"{operationName}連續 {maxAttempts} 次無法連接活頁簿：{resolutionException.Message}",
+                    resolutionException);
             }
 
             throw new RetryableExcelJobException(
                 GetExcelFailureStatus(operationName),
-                $"{operationName}連續 {Math.Max(1, settings.ExcelShortRetryCount)} 次失敗。請先按 Enter 或 Esc、關閉 Excel 對話框，並保持活頁簿開啟。",
+                $"{operationName}連續 {maxAttempts} 次失敗。請先按 Enter 或 Esc、關閉 Excel 對話框，並保持活頁簿開啟。",
                 lastError);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -733,20 +710,6 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 
     private static string NormalizeStockCode(string value)
         => Regex.Replace(value ?? string.Empty, @"\s+", string.Empty).ToUpperInvariant();
-
-    private static string ToMarketText(MarketType? marketType) => marketType switch
-    {
-        MarketType.Listed => "集中市場",
-        MarketType.Otc => "店頭市場",
-        _ => string.Empty
-    };
-
-    private static string ToIndicatorText(IndicatorType? indicatorType) => indicatorType switch
-    {
-        IndicatorType.BullishAlignment => "股價多頭排列",
-        IndicatorType.BearishAlignment => "股價空頭排列",
-        _ => string.Empty
-    };
 
     [GeneratedRegex(@"^[0-9A-Z]{4,10}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex StockCodeRegex();

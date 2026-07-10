@@ -148,6 +148,118 @@ public sealed record OfficialPriceBatchSummary(
     OfficialPriceBatchStatus Status,
     string? ErrorMessage);
 
+/// <summary>
+/// 使用者於歷史收盤價畫面觸發「立即回補」的請求參數。若同時指定 <see cref="StartDate"/> 與
+/// <see cref="EndDate"/>，回補範圍改以此日期區間為準（含首尾），忽略 <see cref="TradingDays"/>；
+/// 否則沿用「最近 N 個交易日」計算方式。
+/// </summary>
+public sealed record StockHistoryImportRequest(
+    MarketScope Scope,
+    int TradingDays,
+    DateOnly? StartDate = null,
+    DateOnly? EndDate = null);
+
+/// <summary>一個抓取工作單位：市場＋交易日期（RequestedDate 為請求日期，非官方回報的實際交易日期）。</summary>
+public sealed record StockPriceImportTaskDescriptor(
+    MarketType MarketType,
+    DateOnly RequestedDate);
+
+/// <summary>StockPriceImportJob 批次整體進度，供畫面顯示與重新整理後回復。</summary>
+public sealed record StockPriceImportJobProgress(
+    long JobId,
+    OfficialPriceJobType JobType,
+    int RequestedTradingDays,
+    DateOnly? TargetDate,
+    string TimeZoneId,
+    int TotalTasks,
+    int CompletedTasks,
+    int SuccessTasks,
+    int FailedTasks,
+    int SkippedTasks,
+    int TotalRows,
+    int ProcessedRows,
+    int InsertedRows,
+    int UpdatedRows,
+    int SkippedRows,
+    int FailedRows,
+    decimal ProgressPercent,
+    StockPriceImportJobStatus Status,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? CompletedAt,
+    string? ErrorMessage);
+
+/// <summary>StockPriceImportTask 單一「市場＋交易日期」工作明細進度。</summary>
+public sealed record StockPriceImportTaskProgress(
+    long TaskId,
+    long JobId,
+    MarketType MarketType,
+    DateOnly RequestedDate,
+    DateOnly? ActualTradeDate,
+    string? SourceUrl,
+    StockPriceImportTaskStatus Status,
+    int RetryCount,
+    int TotalRows,
+    int ProcessedRows,
+    int InsertedRows,
+    int UpdatedRows,
+    int SkippedRows,
+    int FailedRows,
+    decimal ProgressPercent,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? CompletedAt,
+    string? ErrorMessage);
+
+/// <summary>歷史收盤價查詢條件；分頁與參數化查詢由 Repository 負責，禁止一次載入全部歷史資料。</summary>
+public sealed record StockDailyPriceQueryFilter(
+    MarketScope Scope,
+    string? Keyword,
+    DateOnly? StartDate,
+    DateOnly? EndDate,
+    int Page,
+    int PageSize);
+
+/// <summary>歷史收盤價查詢單列結果，MA 欄位為 null 時畫面須顯示「資料不足」，不得顯示0。</summary>
+public sealed record StockDailyPriceQueryRow(
+    DateOnly TradeDate,
+    MarketType MarketType,
+    string StockCode,
+    string StockName,
+    decimal? OpenPrice,
+    decimal? HighPrice,
+    decimal? LowPrice,
+    decimal ClosePrice,
+    decimal? TradeVolume,
+    decimal? PriceChange,
+    string SourceProvider,
+    bool IsOfficial,
+    DateTimeOffset FetchedAt,
+    decimal? MovingAverage5,
+    decimal? MovingAverage20,
+    decimal? MovingAverage60,
+    decimal? MovingAverage120);
+
+/// <summary>歷史收盤價分頁查詢結果。</summary>
+public sealed record StockDailyPriceQueryResult(
+    IReadOnlyList<StockDailyPriceQueryRow> Rows,
+    int TotalCount,
+    int Page,
+    int PageSize);
+
+/// <summary>鉅亨網多頭／空頭排列與官方自算均線的交叉驗證紀錄。</summary>
+public sealed record CnyesValidationRecord(
+    DateOnly TradeDate,
+    MarketType MarketType,
+    string StockCode,
+    int WindowDays,
+    decimal? CalculatedValue,
+    decimal? CnyesValue,
+    decimal? Difference,
+    CnyesValidationOutcome Outcome,
+    DateOnly? CnyesDataDate,
+    string? SourceUrl,
+    DateTimeOffset ValidatedAt,
+    string? ErrorMessage);
+
 public sealed record JobRunSummary(
     Guid JobId,
     DateOnly TargetDate,

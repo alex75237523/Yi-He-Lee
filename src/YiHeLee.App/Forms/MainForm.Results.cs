@@ -1,121 +1,76 @@
-using System.Diagnostics;
 using YiHeLee.Domain;
 
 namespace YiHeLee.App.Forms;
 
-/// <summary>依需求顯示在螢幕正中央的成功、策略清單或失敗通知。</summary>
-internal sealed class ResultCenterForm : Form
+internal sealed partial class MainForm
 {
-    private readonly Func<Task>? _retryAction;
-    private readonly Func<Task>? _secondaryAction;
-    private readonly Button? _retryButton;
-    private readonly Button? _secondaryButton;
-
-    private ResultCenterForm(
-        string title,
-        string message,
-        Color titleColor,
-        Func<Task>? retryAction,
-        string? secondaryButtonText,
-        Func<Task>? secondaryAction)
+    private void RenderIdlePlaceholder()
     {
-        _retryAction = retryAction;
-        _secondaryAction = secondaryAction;
-
-        Text = title;
-        StartPosition = FormStartPosition.CenterScreen;
-        TopMost = true;
-        ShowInTaskbar = true;
-        MinimumSize = new Size(820, 520);
-        Size = new Size(1180, 720);
-        Font = new Font("Microsoft JhengHei UI", 10F);
-        Icon = SystemIcons.Application;
-
-        var header = new Panel { Dock = DockStyle.Top, Height = 88, Padding = new Padding(20, 16, 20, 10) };
-        var titleLabel = new Label
-        {
-            Dock = DockStyle.Top,
-            Height = 34,
-            Text = title,
-            Font = new Font(Font.FontFamily, 18F, FontStyle.Bold),
-            ForeColor = titleColor
-        };
-        var messageLabel = new Label
+        ClearResultsTab();
+        _resultsTab.Controls.Add(new Label
         {
             Dock = DockStyle.Fill,
-            Text = message,
-            AutoEllipsis = true,
-            ForeColor = Color.FromArgb(45, 45, 45)
-        };
-        header.Controls.Add(messageLabel);
-        header.Controls.Add(titleLabel);
-        Controls.Add(header);
-
-        var footer = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 64,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(12)
-        };
-        var closeButton = new Button { Text = "關閉", AutoSize = true, Padding = new Padding(18, 6, 18, 6) };
-        closeButton.Click += (_, _) => Close();
-        footer.Controls.Add(closeButton);
-
-        if (_retryAction is not null)
-        {
-            _retryButton = new Button { Text = "立即重新執行", AutoSize = true, Padding = new Padding(18, 6, 18, 6) };
-            _retryButton.Click += async (_, _) => await ExecuteActionAsync(_retryButton, _retryAction);
-            footer.Controls.Add(_retryButton);
-        }
-
-        if (!string.IsNullOrWhiteSpace(secondaryButtonText) && _secondaryAction is not null)
-        {
-            _secondaryButton = new Button { Text = secondaryButtonText, AutoSize = true, Padding = new Padding(18, 6, 18, 6) };
-            _secondaryButton.Click += async (_, _) => await ExecuteActionAsync(_secondaryButton, _secondaryAction);
-            footer.Controls.Add(_secondaryButton);
-        }
-
-        Controls.Add(footer);
+            TextAlign = ContentAlignment.MiddleCenter,
+            Text = "尚未有今日執行結果。點擊「操作」頁籤的「立即執行」，或等待每日台北時間 13:35 自動執行。",
+            ForeColor = Color.Gray
+        });
     }
 
-    public static ResultCenterForm CreateSuccess(
-        JobRunSummary summary,
-        Func<Task> retryAction,
-        Func<Task> openExcelAction)
+    /// <summary>依最新一次執行結果重建「每日結果」頁籤內容，並自動切換過去。</summary>
+    public void SwitchToResultsTab(JobRunSummary summary, bool isSuccess)
     {
-        var form = new ResultCenterForm(
+        ClearResultsTab();
+        if (isSuccess)
+        {
+            RenderSuccessContent(summary);
+        }
+        else
+        {
+            RenderFailureContent(summary);
+        }
+
+        _tabs.SelectedTab = _resultsTab;
+    }
+
+    private void ClearResultsTab()
+    {
+        var oldControls = _resultsTab.Controls.Cast<Control>().ToArray();
+        _resultsTab.Controls.Clear();
+        foreach (var control in oldControls)
+        {
+            control.Dispose();
+        }
+    }
+
+    private void RenderSuccessContent(JobRunSummary summary)
+    {
+        AddResultHeader(
             "Yi He Lee－每日均價判斷完成",
             $"資料日期：{summary.TargetDate:yyyy-MM-dd}　符合條件：{summary.AlertCount} 筆　無技術資料：{summary.MissingIndicatorCount} 筆",
-            Color.DarkGreen,
-            retryAction,
-            "開啟 Excel",
-            openExcelAction);
+            Color.DarkGreen);
+        AddResultFooter(summary.TargetDate, "開啟 Excel", _openExcelAction);
 
         var tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(12, 6) };
         tabs.TabPages.Add(BuildTriggeredTab(summary.Alerts.Where(x => x.AlertKind == AlertKind.MovingAverageTriggered).ToArray()));
         tabs.TabPages.Add(BuildMissingTab(summary.Alerts.Where(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing).ToArray()));
-        form.Controls.Add(tabs);
+        _resultsTab.Controls.Add(tabs);
         tabs.BringToFront();
-        return form;
     }
 
-    public static ResultCenterForm CreateFailure(
-        JobRunSummary summary,
-        Func<Task> retryAction,
-        Func<Task> settingsAction,
-        Func<Task> logFolderAction)
+    private void RenderFailureContent(JobRunSummary summary)
     {
         var retryDescription = summary.Outcome == RunOutcome.RetryableFailure
             ? "可立即重試，排程也會依設定再次執行。"
             : "請先依錯誤內容修正後，再按下立即重新執行。";
-        var form = new ResultCenterForm(
+        AddResultHeader(
             "Yi He Lee－執行失敗",
             $"第 {summary.AttemptNumber} 次執行失敗。程式已記錄失敗狀態；{retryDescription}",
-            Color.DarkRed,
-            retryAction,
-            "開啟設定",
-            settingsAction);
+            Color.DarkRed);
+        AddResultFooter(summary.TargetDate, "前往設定", () =>
+        {
+            ShowSettingsTab();
+            return Task.CompletedTask;
+        });
 
         var panel = new TableLayoutPanel
         {
@@ -132,7 +87,8 @@ internal sealed class ResultCenterForm : Form
             Text = $"狀態：{ToJobStatusText(summary.Status)}\r\n結果：{ToOutcomeText(summary.Outcome)}\r\n目標日期：{summary.TargetDate:yyyy-MM-dd}",
             AutoSize = true,
             ForeColor = Color.DarkRed,
-            Font = new Font(form.Font, FontStyle.Bold)
+            Font = new Font(Font, FontStyle.Bold),
+            Margin = new Padding(0, 0, 0, 12)
         }, 0, 0);
         panel.Controls.Add(new TextBox
         {
@@ -141,22 +97,84 @@ internal sealed class ResultCenterForm : Form
             Multiline = true,
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
-            BackColor = Color.White
+            BackColor = Color.White,
+            Margin = new Padding(0, 0, 0, 12)
         }, 0, 1);
-        var logButton = new Button { Text = "開啟 Log 資料夾", AutoSize = true, Padding = new Padding(14, 5, 14, 5) };
-        logButton.Click += async (_, _) => await logFolderAction();
+        var logButton = new Button { Text = "開啟 Log 資料夾", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowOnly, MinimumSize = new Size(150, 36), Padding = new Padding(12, 2, 12, 2), TextAlign = ContentAlignment.MiddleCenter };
+        logButton.Click += (_, _) => _openLogFolderAction();
         panel.Controls.Add(logButton, 0, 2);
-        form.Controls.Add(panel);
+        _resultsTab.Controls.Add(panel);
         panel.BringToFront();
-        return form;
     }
 
-    protected override void OnShown(EventArgs e)
+    private void AddResultHeader(string title, string message, Color titleColor)
     {
-        base.OnShown(e);
-        CenterToScreen();
-        BringToFront();
-        Activate();
+        var header = new Panel { Dock = DockStyle.Top, Height = 89, Padding = new Padding(20, 16, 20, 10) };
+        var titleLabel = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 34,
+            Text = title,
+            Font = new Font("Microsoft JhengHei UI", 18F, FontStyle.Bold),
+            ForeColor = titleColor
+        };
+        var messageLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            Text = message,
+            AutoEllipsis = true,
+            ForeColor = Color.FromArgb(45, 45, 45)
+        };
+        var headerSeparator = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = SystemColors.ControlDark };
+        header.Controls.Add(messageLabel);
+        header.Controls.Add(titleLabel);
+        header.Controls.Add(headerSeparator);
+        _resultsTab.Controls.Add(header);
+    }
+
+    private void AddResultFooter(DateOnly targetDate, string secondaryButtonText, Func<Task> secondaryAction)
+    {
+        var footer = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(16)
+        };
+
+        var retryButton = new Button { Text = "立即重新執行", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowOnly, MinimumSize = new Size(150, 36), Padding = new Padding(12, 2, 12, 2), TextAlign = ContentAlignment.MiddleCenter };
+        retryButton.Click += async (_, _) => await ExecuteResultActionAsync(retryButton, () => _runNowAction(targetDate));
+        footer.Controls.Add(retryButton);
+
+        var secondaryButton = new Button { Text = secondaryButtonText, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowOnly, MinimumSize = new Size(150, 36), Padding = new Padding(12, 2, 12, 2), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(0, 0, 12, 0) };
+        secondaryButton.Click += async (_, _) => await ExecuteResultActionAsync(secondaryButton, secondaryAction);
+        footer.Controls.Add(secondaryButton);
+
+        var footerContainer = new Panel { Dock = DockStyle.Bottom, Height = 66 };
+        var footerSeparator = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = SystemColors.ControlDark };
+        footerContainer.Controls.Add(footer);
+        footerContainer.Controls.Add(footerSeparator);
+
+        _resultsTab.Controls.Add(footerContainer);
+    }
+
+    private async Task ExecuteResultActionAsync(Button button, Func<Task> action)
+    {
+        button.Enabled = false;
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "操作失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            if (!IsDisposed)
+            {
+                button.Enabled = true;
+            }
+        }
     }
 
     private static TabPage BuildTriggeredTab(IReadOnlyList<StrategyAlert> alerts)
@@ -176,7 +194,6 @@ internal sealed class ResultCenterForm : Form
         }
 
         var grid = CreateGrid();
-        AddTextColumn(grid, "客戶", 120);
         AddTextColumn(grid, "頁籤", 140);
         AddTextColumn(grid, "代碼", 85);
         AddTextColumn(grid, "股票", 130);
@@ -190,15 +207,14 @@ internal sealed class ResultCenterForm : Form
         foreach (var alert in alerts)
         {
             var index = grid.Rows.Add(
-                alert.CustomerName,
                 alert.SheetName,
                 alert.StockCode,
                 alert.StockName,
                 FormatDecimal(alert.EntryAveragePrice),
                 FormatDecimal(alert.ClosePrice),
-                FormatDecimal(alert.MovingAverage5),
-                FormatDecimal(alert.MovingAverage20),
-                FormatDecimal(alert.MovingAverage120),
+                FormatMa(alert.MovingAverage5),
+                FormatMa(alert.MovingAverage20),
+                FormatMa(alert.MovingAverage120),
                 BuildTriggerText(alert));
             grid.Rows[index].DefaultCellStyle.BackColor = index % 2 == 0 ? Color.White : Color.FromArgb(242, 248, 252);
         }
@@ -222,7 +238,6 @@ internal sealed class ResultCenterForm : Form
         }
 
         var grid = CreateGrid();
-        AddTextColumn(grid, "客戶", 120);
         AddTextColumn(grid, "頁籤", 150);
         AddTextColumn(grid, "原始列", 70);
         AddTextColumn(grid, "代碼", 90);
@@ -232,7 +247,6 @@ internal sealed class ResultCenterForm : Form
         foreach (var alert in alerts)
         {
             var index = grid.Rows.Add(
-                alert.CustomerName,
                 alert.SheetName,
                 alert.ExcelRow,
                 alert.StockCode,
@@ -287,25 +301,8 @@ internal sealed class ResultCenterForm : Form
 
     private static string FormatDecimal(decimal? value) => value?.ToString("0.##") ?? string.Empty;
 
-    private async Task ExecuteActionAsync(Button button, Func<Task> action)
-    {
-        button.Enabled = false;
-        try
-        {
-            await action();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "操作失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            if (!IsDisposed)
-            {
-                button.Enabled = true;
-            }
-        }
-    }
+    // 均線資料不足時必須顯示文字，不得顯示空白或0，避免使用者誤判為尚未抓到資料以外的狀況。
+    private static string FormatMa(decimal? value) => value?.ToString("0.##") ?? "尚未抓到資料";
 
     private static string ToJobStatusText(JobStatus status) => status switch
     {

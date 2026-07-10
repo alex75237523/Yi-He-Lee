@@ -33,6 +33,11 @@ public sealed class StrategyEvaluationService
 
             if (!byCode.TryGetValue(code, out var ma) || ma.ClosePrice is null)
             {
+                var missingReason = marketType switch
+                {
+                    MarketType.Emerging => "TPEx 興櫃官方當日行情尚無此股票資料，無法判斷均線，禁止使用昨日資料補值。",
+                    _ => "TWSE／TPEx／TPEx興櫃 官方每日收盤價尚無此股票當日資料，無法判斷均線，禁止使用昨日資料補值。"
+                };
                 result.Add(new StrategyAlert(
                     tradeDate,
                     AlertKind.TechnicalIndicatorMissing,
@@ -46,7 +51,7 @@ public sealed class StrategyEvaluationService
                     holding.Quantity,
                     null, null, null, null, null,
                     false, false, false,
-                    "TWSE／TPEx 官方每日收盤價尚無此股票當日資料，無法判斷均線，禁止使用昨日資料補值。",
+                    missingReason,
                     marketType,
                     null,
                     null,
@@ -103,6 +108,7 @@ public sealed class StrategyEvaluationService
     {
         MarketType.Listed => "TWSE",
         MarketType.Otc => "TPEx",
+        MarketType.Emerging => "TPEx興櫃",
         _ => null
     };
 

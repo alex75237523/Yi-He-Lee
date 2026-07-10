@@ -64,4 +64,16 @@ public interface IMarketDataRepository
         DateOnly targetDate,
         string sourceProvider,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 歷史收盤價分頁查詢（供「歷史收盤價」查詢畫面使用）。MA5／20／60／120 一律以 SQL Window Function
+    /// 依股票、交易日期由舊到新的 Rolling Window 計算，避免對每一列個別查詢造成 N+1。
+    /// 禁止一次載入全部歷史資料，呼叫端必須提供分頁條件。
+    /// </summary>
+    Task<StockDailyPriceQueryResult> QueryDailyPricesAsync(
+        StockDailyPriceQueryFilter filter,
+        CancellationToken cancellationToken);
+
+    /// <summary>取得資料庫目前已保存的最新交易日期；尚無資料時回傳 null。</summary>
+    Task<DateOnly?> GetLatestTradeDateAsync(CancellationToken cancellationToken);
 }

@@ -15,6 +15,7 @@ public sealed class MarketPriceService : IMarketPriceService
 {
     private readonly ITwseMarketDataProvider _twseProvider;
     private readonly ITpexMarketDataProvider _tpexProvider;
+    private readonly IEmergingMarketDataProvider _emergingProvider;
     private readonly IMarketDataRepository _repository;
     private readonly IClock _clock;
     private readonly IAppLogger _logger;
@@ -22,12 +23,14 @@ public sealed class MarketPriceService : IMarketPriceService
     public MarketPriceService(
         ITwseMarketDataProvider twseProvider,
         ITpexMarketDataProvider tpexProvider,
+        IEmergingMarketDataProvider emergingProvider,
         IMarketDataRepository repository,
         IClock clock,
         IAppLogger logger)
     {
         _twseProvider = twseProvider;
         _tpexProvider = tpexProvider;
+        _emergingProvider = emergingProvider;
         _repository = repository;
         _clock = clock;
         _logger = logger;
@@ -63,7 +66,8 @@ public sealed class MarketPriceService : IMarketPriceService
     public async Task<IReadOnlyList<OfficialPriceBatchSummary>> BackfillHistoryAsync(
         DateOnly targetDate,
         OfficialMarketDataSettings settings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? reportProgress = null)
     {
         var summaries = new List<OfficialPriceBatchSummary>();
         var requiredTradingDays = Math.Max(1, settings.RequiredTradingDaysForMa120);
@@ -80,19 +84,30 @@ public sealed class MarketPriceService : IMarketPriceService
             var existingTradingDays = await _repository.GetDistinctTradeDateCountAsync(referenceDate, requiredTradingDays, cancellationToken).ConfigureAwait(false);
             if (existingTradingDays >= requiredTradingDays)
             {
+                reportProgress?.Invoke($"MA120 歷史資料已足夠（{existingTradingDays}/{requiredTradingDays} 個交易日），不需回補。");
                 break;
             }
 
             if (cursor.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday))
             {
+                reportProgress?.Invoke(
+                    $"正在回補 MA120 歷史收盤價：抓取 {cursor:yyyy-MM-dd} 上市（TWSE）全部股票收盤價……" +
+                    $"（已累積 {existingTradingDays}/{requiredTradingDays} 個交易日）");
                 var twseSummary = await FetchAndSaveOneAsync(OfficialPriceJobType.HistoricalBackfill, cursor, MarketType.Listed, settings, cancellationToken).ConfigureAwait(false);
                 summaries.Add(twseSummary);
 
                 var isHoliday = twseSummary.Status == OfficialPriceBatchStatus.Holiday;
+                reportProgress?.Invoke(
+                    $"正在回補 MA120 歷史收盤價：抓取 {cursor:yyyy-MM-dd} 上櫃（TPEx）全部股票收盤價……" +
+                    $"（已累積 {existingTradingDays}/{requiredTradingDays} 個交易日）");
                 var tpexSummary = await FetchAndSaveOneAsync(
                     OfficialPriceJobType.HistoricalBackfill, cursor, MarketType.Otc, settings, cancellationToken,
                     treatDateMismatchAsHoliday: isHoliday).ConfigureAwait(false);
                 summaries.Add(tpexSummary);
+
+                reportProgress?.Invoke(
+                    $"已完成 {cursor:yyyy-MM-dd} 回補：{DescribeBackfillDay(twseSummary, tpexSummary)}" +
+                    $"（已累積 {existingTradingDays}/{requiredTradingDays} 個交易日）");
 
                 // 避免大量平行轟炸官方網站；逐日之間節流。
                 await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(0, settings.BackfillThrottleMillisecondsBetweenRequests)), cancellationToken).ConfigureAwait(false);
@@ -104,6 +119,28 @@ public sealed class MarketPriceService : IMarketPriceService
         return summaries;
     }
 
+    /// <summary>組出單日回補結果的細節文字（供畫面顯示），例如「上市 新增 1023 筆、上櫃 新增 812 筆」或「休市」。</summary>
+    private static string DescribeBackfillDay(OfficialPriceBatchSummary twse, OfficialPriceBatchSummary tpex)
+    {
+        static string Describe(string marketName, OfficialPriceBatchSummary summary) => summary.Status switch
+        {
+            OfficialPriceBatchStatus.Succeeded => $"{marketName} 新增 {summary.InsertedCount} 筆、更新 {summary.UpdatedCount} 筆",
+            OfficialPriceBatchStatus.Holiday => $"{marketName} 休市",
+            OfficialPriceBatchStatus.NotPublished => $"{marketName} 尚未公布",
+            _ => $"{marketName} 失敗"
+        };
+
+        return $"{Describe("上市", twse)}、{Describe("上櫃", tpex)}";
+    }
+
+    public async Task<OfficialPriceBatchSummary> FetchAndSaveSingleAsync(
+        OfficialPriceJobType jobType,
+        DateOnly targetDate,
+        MarketType marketType,
+        OfficialMarketDataSettings settings,
+        CancellationToken cancellationToken)
+        => await FetchAndSaveOneAsync(jobType, targetDate, marketType, settings, cancellationToken).ConfigureAwait(false);
+
     private async Task<OfficialPriceBatchSummary> FetchAndSaveOneAsync(
         OfficialPriceJobType jobType,
         DateOnly targetDate,
@@ -112,7 +149,13 @@ public sealed class MarketPriceService : IMarketPriceService
         CancellationToken cancellationToken,
         bool treatDateMismatchAsHoliday = false)
     {
-        var providerName = marketType == MarketType.Listed ? _twseProvider.SourceProviderName : _tpexProvider.SourceProviderName;
+        var providerName = ResolveProviderName(marketType);
+
+        if (targetDate.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+        {
+            // 週末非交易日，防禦性檢查：即使呼叫端（例如歷史回補並行服務）未先行判斷，也不會對官方來源發送不必要的請求。
+            return await RecordHolidayWithoutFetchAsync(jobType, targetDate, providerName, marketType, cancellationToken).ConfigureAwait(false);
+        }
 
         if (await _repository.HasSucceededBatchAsync(jobType, targetDate, providerName, cancellationToken).ConfigureAwait(false))
         {
@@ -126,9 +169,13 @@ public sealed class MarketPriceService : IMarketPriceService
         OfficialPriceFetchResult fetchResult;
         try
         {
-            fetchResult = marketType == MarketType.Listed
-                ? await _twseProvider.FetchDailyCloseAsync(targetDate, settings, cancellationToken).ConfigureAwait(false)
-                : await _tpexProvider.FetchDailyCloseAsync(targetDate, settings, cancellationToken).ConfigureAwait(false);
+            fetchResult = marketType switch
+            {
+                MarketType.Listed => await _twseProvider.FetchDailyCloseAsync(targetDate, settings, cancellationToken).ConfigureAwait(false),
+                MarketType.Otc => await _tpexProvider.FetchDailyCloseAsync(targetDate, settings, cancellationToken).ConfigureAwait(false),
+                MarketType.Emerging => await _emergingProvider.FetchDailyCloseAsync(targetDate, settings, cancellationToken).ConfigureAwait(false),
+                _ => throw new ArgumentOutOfRangeException(nameof(marketType), marketType, "不支援的市場別。")
+            };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -224,6 +271,14 @@ public sealed class MarketPriceService : IMarketPriceService
         await _repository.CompletePriceBatchAsync(summary, cancellationToken).ConfigureAwait(false);
         return summary;
     }
+
+    private string ResolveProviderName(MarketType marketType) => marketType switch
+    {
+        MarketType.Listed => _twseProvider.SourceProviderName,
+        MarketType.Otc => _tpexProvider.SourceProviderName,
+        MarketType.Emerging => _emergingProvider.SourceProviderName,
+        _ => throw new ArgumentOutOfRangeException(nameof(marketType), marketType, "不支援的市場別。")
+    };
 
     private static OfficialPriceBatchSummary CreateSyntheticSummary(
         OfficialPriceJobType jobType,

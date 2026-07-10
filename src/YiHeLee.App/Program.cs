@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.Loader;
 using YiHeLee.App.Infrastructure;
 using YiHeLee.Application.Services;
 using YiHeLee.Infrastructure.Crawlers;
@@ -15,6 +17,7 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        RegisterOfficeInteropAssemblyResolver();
         ApplicationConfiguration.Initialize();
 
         using var singleInstance = new SingleInstanceGuard(@"Local\YiHeLee.TrayApp.SingleInstance");
@@ -42,10 +45,18 @@ internal static class Program
         using var marketDataHttpClient = new HttpClient();
         var twseProvider = new TwseMarketDataProvider(marketDataHttpClient, logger, clock);
         var tpexProvider = new TpexMarketDataProvider(marketDataHttpClient, logger, clock);
-        var marketPriceService = new MarketPriceService(twseProvider, tpexProvider, marketDataRepository, clock, logger);
+        var emergingProvider = new EmergingMarketDataProvider(marketDataHttpClient, logger, clock);
+        var marketPriceService = new MarketPriceService(twseProvider, tpexProvider, emergingProvider, marketDataRepository, clock, logger);
         var dailyMarketDataJob = new DailyMarketDataJob(marketPriceService);
         var historicalBackfillJob = new HistoricalBackfillJob(marketPriceService);
         var movingAverageService = new MovingAverageService(marketDataRepository);
+
+        // 歷史收盤價查詢畫面／立即回補：使用者手動觸發，市場＋交易日期為工作單位，
+        // 進度另存於 StockPriceImportJob／StockPriceImportTask，與既有每日排程的 OfficialPriceBatch 分開記錄。
+        var stockPriceImportRepository = new SqliteStockPriceImportRepository(paths.DatabasePath, clock);
+        var stockHistoryImportService = new StockHistoryImportService(marketPriceService, stockPriceImportRepository, clock, logger);
+        var stockPriceValidationRepository = new SqliteStockPriceValidationRepository(paths.DatabasePath);
+        var stockPriceValidationService = new CnyesStockPriceValidationService(movingAverageService, stockPriceValidationRepository, clock, logger);
 
         var strategyService = new StrategyEvaluationService();
         var dailyJobService = new DailyJobService(
@@ -59,6 +70,7 @@ internal static class Program
             logger,
             dailyMarketDataJob,
             historicalBackfillJob,
+            marketPriceService,
             movingAverageService,
             strategyService,
             validationService);
@@ -74,6 +86,8 @@ internal static class Program
         {
             repository.InitializeAsync().GetAwaiter().GetResult();
             marketDataRepository.InitializeAsync().GetAwaiter().GetResult();
+            stockPriceImportRepository.InitializeAsync().GetAwaiter().GetResult();
+            stockPriceValidationRepository.InitializeAsync().GetAwaiter().GetResult();
 
             using var context = new TrayApplicationContext(
                 args,
@@ -85,7 +99,12 @@ internal static class Program
                 repository,
                 userInteraction,
                 startupManager,
-                logger);
+                logger,
+                marketDataRepository,
+                stockHistoryImportService,
+                stockPriceImportRepository,
+                crawlerRegistry,
+                stockPriceValidationService);
             System.Windows.Forms.Application.Run(context);
         }
         catch (Exception ex)
@@ -102,5 +121,28 @@ internal static class Program
             try { scheduleCoordinator.StopAsync().GetAwaiter().GetResult(); } catch { }
             try { cnyesCrawler.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
         }
+    }
+
+    private static void RegisterOfficeInteropAssemblyResolver()
+    {
+        AssemblyLoadContext.Default.Resolving += (_, assemblyName) =>
+        {
+            var fileName = assemblyName.Name switch
+            {
+                "office" => "office.dll",
+                "Microsoft.Vbe.Interop" => "Microsoft.Vbe.Interop.dll",
+                _ => null
+            };
+
+            if (fileName is null)
+            {
+                return null;
+            }
+
+            var assemblyPath = Path.Combine(AppContext.BaseDirectory, fileName);
+            return File.Exists(assemblyPath)
+                ? AssemblyLoadContext.Default.LoadFromAssemblyPath(assemblyPath)
+                : null;
+        };
     }
 }

@@ -4,9 +4,9 @@
 .idea/
 *.user
 *.suo
-logs/
-Data/
-Backups/
+/Logs/
+/Data/
+/Backups/
 settings.json
 *.db
 *.db-shm

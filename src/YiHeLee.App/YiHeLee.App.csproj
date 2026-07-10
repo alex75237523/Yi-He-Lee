@@ -9,10 +9,24 @@
     <RootNamespace>YiHeLee.App</RootNamespace>
     <Platforms>AnyCPU;x64</Platforms>
     <Prefer32Bit>false</Prefer32Bit>
+    <Office16PiaDirectory>$(ProgramFiles)\Microsoft Office\root\vfs\ProgramFilesX86\Microsoft Office\Office16\DCF</Office16PiaDirectory>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\YiHeLee.Domain\YiHeLee.Domain.csproj" />
     <ProjectReference Include="..\YiHeLee.Application\YiHeLee.Application.csproj" />
     <ProjectReference Include="..\YiHeLee.Infrastructure\YiHeLee.Infrastructure.csproj" />
   </ItemGroup>
+  <ItemGroup Condition="Exists('$(Office16PiaDirectory)\office.dll') And Exists('$(Office16PiaDirectory)\Microsoft.Vbe.Interop.dll')">
+    <Reference Include="office">
+      <HintPath>$(Office16PiaDirectory)\office.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.Vbe.Interop">
+      <HintPath>$(Office16PiaDirectory)\Microsoft.Vbe.Interop.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+  <Target Name="WarnWhenOfficePiaFilesAreMissing" BeforeTargets="Build" Condition="!Exists('$(Office16PiaDirectory)\office.dll') Or !Exists('$(Office16PiaDirectory)\Microsoft.Vbe.Interop.dll')">
+    <Warning Text="Office 16 interop dependencies were not found at '$(Office16PiaDirectory)'. Excel automation may fail at runtime with a missing 'office' assembly unless office.dll and Microsoft.Vbe.Interop.dll are copied next to the app." />
+  </Target>
 </Project>

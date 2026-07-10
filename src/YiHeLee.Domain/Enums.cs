@@ -9,7 +9,11 @@ public enum IndicatorType
 public enum MarketType
 {
     Listed = 1,
-    Otc = 2
+    Otc = 2,
+
+    /// <summary>興櫃（TPEx 興櫃股票市場）。當日行情僅有官方即時快照，無日期參數可回補歷史資料，
+    /// 因此只參與每日排程，不參與 <see cref="OfficialPriceJobType.HistoricalBackfill"/>。</summary>
+    Emerging = 3
 }
 
 public enum JobStatus
@@ -74,4 +78,53 @@ public enum OfficialPriceJobType
 {
     DailyMarketData = 1,
     HistoricalBackfill = 2
+}
+
+/// <summary>歷史收盤價查詢／回補的市場別篩選範圍。</summary>
+public enum MarketScope
+{
+    All = 0,
+    Listed = 1,
+    Otc = 2
+}
+
+/// <summary>使用者手動觸發的歷史收盤價回補批次（StockPriceImportJob）狀態。</summary>
+public enum StockPriceImportJobStatus
+{
+    Queued = 1,
+    Running = 2,
+    WaitingForSource = 3,
+    Completed = 4,
+    CompletedWithErrors = 5,
+    Failed = 6,
+    Cancelled = 7
+}
+
+/// <summary>一個「市場＋交易日期」抓取工作（StockPriceImportTask）狀態。</summary>
+public enum StockPriceImportTaskStatus
+{
+    Queued = 1,
+    Running = 2,
+    WaitingForSource = 3,
+    Succeeded = 4,
+    Holiday = 5,
+    Failed = 6,
+    Cancelled = 7
+}
+
+/// <summary>鉅亨網交叉驗證結果。股票未出現在多頭／空頭清單中時為 NotApplicable，不代表計算錯誤。</summary>
+public enum CnyesValidationOutcome
+{
+    Matched = 1,
+    Mismatched = 2,
+    NotApplicable = 3,
+
+    /// <summary>鉅亨頁面日期與目標交易日期不一致，拒絕比對。</summary>
+    SourceDateMismatch = 4,
+
+    /// <summary>本系統均線資料不足（例如僅回補5日時的 MA20／60／120），不得硬算比對。</summary>
+    InsufficientHistory = 5,
+
+    /// <summary>鉅亨網來源本次擷取失敗，不影響官方資料，僅記錄無法驗證。</summary>
+    SourceUnavailable = 6
 }

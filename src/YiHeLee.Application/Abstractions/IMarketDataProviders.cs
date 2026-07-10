@@ -31,3 +31,18 @@ public interface ITpexMarketDataProvider
         OfficialMarketDataSettings settings,
         CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// TPEx 官方興櫃股票當日行情來源。與 <see cref="ITwseMarketDataProvider"/>／<see cref="ITpexMarketDataProvider"/>
+/// 介面形狀相同，但來源端點沒有日期參數、只回報呼叫當下的即時快照；requestedDate 僅用於比對
+/// 回應內的資料日期是否等於當日，不會被組進查詢網址。
+/// </summary>
+public interface IEmergingMarketDataProvider
+{
+    string SourceProviderName { get; }
+
+    Task<OfficialPriceFetchResult> FetchDailyCloseAsync(
+        DateOnly requestedDate,
+        OfficialMarketDataSettings settings,
+        CancellationToken cancellationToken);
+}

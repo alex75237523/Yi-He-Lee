@@ -12,4 +12,7 @@
     <PackageReference Include="Microsoft.Playwright" Version="1.61.0" />
     <PackageReference Include="Microsoft.Office.Interop.Excel" Version="16.0.18925.20022" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="YiHeLee.Tests" />
+  </ItemGroup>
 </Project>

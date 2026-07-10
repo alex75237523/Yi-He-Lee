@@ -233,3 +233,7 @@ Build／測試結果：
 ### 4. 鉅亨網與官方流程解耦（2026-07-09 更新）
 
 均線正式判斷已不再依賴鉅亨網數值，因此鉅亨網多頭／空頭排列清單擷取（第一～八節）改為 **best-effort**：尚未更新當日資料或擷取失敗時，`DailyJobService` 只記錄提醒訊息並繼續執行官方價格擷取、均線計算、策略判斷與 Excel 寫入，不再讓鉅亨網單一來源阻擋整批工作。`JobRunDetails` 仍完整記錄鉅亨網每次失敗細節供人工追查；`OfficialPriceBatch` 則仍依第九節規則嚴格驗證來源日期，任一官方來源尚未公布或失敗時，整批工作依然視為可重試失敗，不得寫入策略結果。
+
+### 5. 歷史收盤價查詢與使用者手動回補（2026-07-09 新增）
+
+新增「歷史收盤價」查詢畫面（系統匣選單）與手動「立即回補」功能，工作單位固定為「市場＋交易日期」（禁止逐檔股票各發送一次請求，回補5個有效交易日、市場範圍全部時約產生10個工作）。新增設定類別 `StockHistoryImportOptions`（`AppSettings.StockHistoryImport`）控制預設交易日數（5）、可選上限（250）、並行上限（預設4、不超過8）、逾時與重試次數，畫面提供 5/10/20/60/120/自訂選項。實作重用既有 `IMarketPriceService`（新增公開方法 `FetchAndSaveSingleAsync`，供單一市場＋單一交易日抓取重用既有驗證與冪等 Upsert）、`IMovingAverageService`，新增 `IStockHistoryImportService`（`Parallel.ForEachAsync` 有限並行、指數退避重試、可取消）、`IStockPriceValidationService`（鉅亨交叉驗證，日期須相符才比對、誤差0.01門檻、不在清單標記不適用、鉅亨資料不覆蓋官方資料）與對應 Repository／資料表（`StockPriceImportJob`／`StockPriceImportTask`／`CnyesCrossValidation`）。歷史收盤價查詢分頁以 SQL Window Function 計算 MA5／20／60／120，避免 N+1。詳見 `docs/02_架構與資料流程.md`「歷史收盤價查詢畫面／使用者手動回補」與 `docs/03_資料庫結構.md`同名章節、`docs/05_異動紀錄.md` 2026-07-09 條目。

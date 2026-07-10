@@ -43,15 +43,16 @@
 - Excel 忙碌、對話框、正在編輯儲存格等暫時錯誤會短暫重試；只有可重試失敗才會由排程再次執行。唯讀、工作表保護、設定錯誤等問題會立即停止並要求人工修正。
 - 程式常駐 Windows 右下角系統匣，可立即執行、開啟設定、開啟 Excel、查看 Log、選擇以系統管理員重新啟動。
 - 可設定 N 個網址；不同網站應新增獨立 `ISourceCrawler`，不可把不同網頁解析規則混在同一 Provider。非必要來源若任一市場失敗，該來源整批不寫入，不影響兩個固定必要來源的成功判定。
+- **歷史收盤價查詢與手動回補（2026-07-09 新增）**：系統匣選單「歷史收盤價」可查詢分頁歷史收盤價（含 MA5／MA20／MA60／MA120，資料不足顯示文字而非0），並可手動「立即回補」最近 N 個有效交易日（預設5日，可調整），以市場＋交易日期為工作單位有限並行抓取（預設4、上限8），即時顯示整體與工作明細進度，可取消，重新整理仍可回復進度；另提供與鉅亨網多頭／空頭清單交叉驗證。詳見 `docs/02_架構與資料流程.md`、`docs/03_資料庫結構.md`。
 
 ## 技術架構
 
 ```text
-YiHeLee.App             WinForms、NotifyIcon、中央結果視窗、設定畫面
-YiHeLee.Application     排程流程、驗證、均線策略、官方價格協調（MarketPriceService）、介面
+YiHeLee.App             WinForms、NotifyIcon、中央結果視窗、設定畫面、歷史收盤價查詢／回補進度畫面
+YiHeLee.Application     排程流程、驗證、均線策略、官方價格協調（MarketPriceService）、歷史回補並行協調（StockHistoryImportService）、鉅亨交叉驗證、介面
 YiHeLee.Infrastructure  Playwright 爬蟲、TWSE／TPEx HTTP Provider、Excel Interop、SQLite、Log、設定檔
 YiHeLee.Domain          Entity、Enum、設定模型
-tests/YiHeLee.Tests     策略、排除規則、設定、鉅亨表格 Parser、TWSE／TPEx Parser、均線計算、官方價格服務、SQLite 測試
+tests/YiHeLee.Tests     策略、排除規則、設定、鉅亨表格 Parser、TWSE／TPEx Parser、均線計算、官方價格服務、歷史回補並行／進度、歷史收盤價查詢、鉅亨交叉驗證、SQLite 測試
 ```
 
 ## 執行需求
@@ -103,6 +104,15 @@ dotnet test .\tests\YiHeLee.Tests\YiHeLee.Tests.csproj -c Release --no-build
 ## Excel 使用者注意事項
 
 執行前請按 Enter 或 Esc 結束儲存格編輯，並關閉另存新檔、列印、尋找取代等 Excel 對話框。執行期間不要關閉 Excel、重新命名或刪除輸出頁籤、執行巨集或另存新檔。程式寫入前會以 Excel `SaveCopyAs` 建立包含目前記憶體狀態的備份；完成時會儲存整份活頁簿，因此也會一併儲存使用者尚未儲存的變更。
+
+### 找不到已開啟活頁簿時
+
+程式會依序使用 Running Object Table、目前作用中的 Excel，以及 Windows 上所有 Excel 視窗尋找指定活頁簿，並把探測到的活頁簿路徑與錯誤寫入 Log。若仍失敗，請依中央視窗訊息處理：
+
+- Excel 上方出現黃色「受保護的檢視」列時，先按「啟用編輯」；受保護檢視不可寫入，程式會直接要求人工處理，不再無效重試。
+- 若 Excel 已開啟同名檔案，但路徑與設定不同，請在設定重新選取目前實際開啟的檔案；程式不會只憑檔名連接，避免寫錯副本。
+- 若 Log 顯示已偵測到 Excel 視窗但無法取得 NativeOM，自動化介面通常被權限隔離；請讓 Excel 與 Yi He Lee 都以一般權限開啟，或兩者都以系統管理員權限開啟。
+- 活頁簿剛開啟、尚未完成 COM 註冊時，程式會依 `ExcelShortRetryCount`／`ExcelShortRetryDelaySeconds` 先做短暫重試。
 
 ## 資料位置
 

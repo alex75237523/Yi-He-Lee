@@ -19,16 +19,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly WinFormsUserInteraction _userInteraction;
     private readonly WindowsStartupManager _startupManager;
     private readonly IAppLogger _logger;
+    private readonly IMarketDataRepository _marketDataRepository;
+    private readonly IStockHistoryImportService _stockHistoryImportService;
+    private readonly IStockPriceImportRepository _stockPriceImportRepository;
+    private readonly ICrawlerRegistry _crawlerRegistry;
+    private readonly IStockPriceValidationService _stockPriceValidationService;
     private readonly Form _dispatcherForm;
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _runNowItem;
     private readonly ToolStripMenuItem _settingsItem;
     private readonly ToolStripMenuItem _openExcelItem;
+    private readonly ToolStripMenuItem _historicalPriceItem;
     private readonly ToolStripMenuItem _administratorItem;
     private readonly CancellationTokenSource _lifetimeCts = new();
     private Task? _manualRunTask;
-    private ResultCenterForm? _resultForm;
+    private MainForm? _mainForm;
+    private HistoricalPriceForm? _historicalPriceForm;
     private bool _isExiting;
 
     public TrayApplicationContext(
@@ -41,7 +48,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         IYiHeLeeRepository repository,
         WinFormsUserInteraction userInteraction,
         WindowsStartupManager startupManager,
-        IAppLogger logger)
+        IAppLogger logger,
+        IMarketDataRepository marketDataRepository,
+        IStockHistoryImportService stockHistoryImportService,
+        IStockPriceImportRepository stockPriceImportRepository,
+        ICrawlerRegistry crawlerRegistry,
+        IStockPriceValidationService stockPriceValidationService)
     {
         _paths = paths;
         _dailyJobService = dailyJobService;
@@ -52,6 +64,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _userInteraction = userInteraction;
         _startupManager = startupManager;
         _logger = logger;
+        _marketDataRepository = marketDataRepository;
+        _stockHistoryImportService = stockHistoryImportService;
+        _stockPriceImportRepository = stockPriceImportRepository;
+        _crawlerRegistry = crawlerRegistry;
+        _stockPriceValidationService = stockPriceValidationService;
 
         _dispatcherForm = new Form
         {
@@ -64,11 +81,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         _ = _dispatcherForm.Handle;
         _userInteraction.AttachDispatcher(_dispatcherForm);
+        _userInteraction.ExcelSafetyConfirmationHandler = ConfirmExcelSafetyAsync;
 
         _statusItem = new ToolStripMenuItem("狀態：初始化中") { Enabled = false };
         _runNowItem = new ToolStripMenuItem("立即執行", null, async (_, _) => await RunNowAsync());
-        _settingsItem = new ToolStripMenuItem("設定", null, async (_, _) => await ShowSettingsAsync());
+        _settingsItem = new ToolStripMenuItem("設定", null, async (_, _) =>
+        {
+            await ShowMainWindowAsync();
+            _mainForm!.ShowSettingsTab();
+        });
         _openExcelItem = new ToolStripMenuItem("開啟設定的 Excel", null, async (_, _) => await OpenConfiguredExcelAsync());
+        // 是否顯示交由 AppSettings.ShowHistoricalPriceButton 這個 config 旗標控制，
+        // 這裡先預設隱藏，待下方非同步載入設定後再依實際值同步顯示狀態。
+        _historicalPriceItem = new ToolStripMenuItem("歷史收盤價", null, (_, _) => ShowHistoricalPriceForm())
+        {
+            Visible = false
+        };
         _administratorItem = new ToolStripMenuItem();
         ConfigureAdministratorMenu();
 
@@ -79,6 +107,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _runNowItem,
             _settingsItem,
             _openExcelItem,
+            _historicalPriceItem,
             new ToolStripSeparator(),
             new ToolStripMenuItem("開啟資料資料夾", null, (_, _) => OpenFolder(_paths.RootDirectory)),
             new ToolStripMenuItem("開啟 Log 資料夾", null, (_, _) => OpenFolder(_paths.LogDirectory)),
@@ -94,22 +123,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = menu
         };
-        _notifyIcon.DoubleClick += async (_, _) => await ShowSettingsAsync();
+        _notifyIcon.DoubleClick += async (_, _) => await ShowMainWindowAsync();
 
         _userInteraction.StatusChanged += SetStatus;
+        _userInteraction.ProgressDetailChanged += SetProgressDetail;
         _userInteraction.Succeeded += ShowSuccessCenter;
         _userInteraction.Failed += ShowFailureCenter;
 
         _scheduleCoordinator.Start();
-        SetStatus("等待每日台北時間 13:35，自動執行中");
+        SetStatus("等待每日台北時間 13:35，自動執行中", 0);
 
         var forceSettings = args.Any(x => string.Equals(x, "--settings", StringComparison.OrdinalIgnoreCase));
         _dispatcherForm.BeginInvoke(new Action(async () =>
         {
             var settings = await _settingsStore.LoadAsync(_lifetimeCts.Token);
+            // 依 config 旗標同步系統匣選單「歷史收盤價」項目的顯示狀態。
+            _historicalPriceItem.Visible = settings.ShowHistoricalPriceButton;
             if (forceSettings || string.IsNullOrWhiteSpace(settings.WorkbookPath))
             {
-                await ShowSettingsAsync();
+                await ShowMainWindowAsync();
+                _mainForm!.ShowSettingsTab();
             }
             else if (!args.Any(x => string.Equals(x, "--minimized", StringComparison.OrdinalIgnoreCase)))
             {
@@ -120,41 +153,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ConfigureAdministratorMenu()
     {
-        if (AdministratorHelper.IsAdministrator())
-        {
-            _administratorItem.Text = "目前以系統管理員執行";
-            _administratorItem.Enabled = false;
-            return;
-        }
-
-        _administratorItem.Text = "以系統管理員重新啟動";
-        _administratorItem.Click += async (_, _) =>
-        {
-            var result = MessageBox.Show(
-                "提升權限後，Excel 也必須用相同的系統管理員權限開啟，否則程式可能找不到已開啟的活頁簿。\r\n\r\n是否仍要重新啟動？",
-                "Yi He Lee－系統管理員權限",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2);
-            if (result != DialogResult.Yes)
-            {
-                return;
-            }
-
-            try
-            {
-                AdministratorHelper.RestartAsAdministrator();
-                await ExitApplicationAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger.Error("以系統管理員重新啟動失敗。", ex);
-                MessageBox.Show(ex.Message, "重新啟動失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        };
+        // 程式不需要、也不應該以系統管理員權限執行（需與一般權限開啟的 Excel 搭配）。
+        // 這裡只顯示目前狀態供使用者確認，不提供提升權限的選項。
+        _administratorItem.Text = AdministratorHelper.IsAdministrator()
+            ? "警告：目前以系統管理員執行，請改用一般權限重新啟動"
+            : "目前以一般權限執行（正確）";
+        _administratorItem.Enabled = false;
     }
 
-    private async Task RunNowAsync()
+    private async Task RunNowAsync(DateOnly? manualTargetDate = null)
     {
         if (_isExiting)
         {
@@ -168,7 +175,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _runNowItem.Enabled = false;
-        _manualRunTask = RunManualCoreAsync();
+        _manualRunTask = RunManualCoreAsync(manualTargetDate);
         try
         {
             await _manualRunTask;
@@ -182,11 +189,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async Task RunManualCoreAsync()
+    private async Task RunManualCoreAsync(DateOnly? manualTargetDate)
     {
         try
         {
-            await _dailyJobService.RunAsync(isManualRun: true, _lifetimeCts.Token);
+            await _dailyJobService.RunAsync(isManualRun: true, _lifetimeCts.Token, manualTargetDate);
         }
         catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
         {
@@ -194,52 +201,70 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             _logger.Error("手動執行發生未處理錯誤。", ex);
-            SetStatus("手動執行失敗");
+            SetStatus("手動執行失敗", 0);
             MessageBox.Show(ex.Message, "Yi He Lee－執行失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
-    private async Task ShowSettingsAsync()
+    private async Task ShowMainWindowAsync()
     {
         if (_isExiting)
         {
             return;
         }
 
-        try
+        if (_mainForm is null || _mainForm.IsDisposed)
         {
             var current = await _settingsStore.LoadAsync(_lifetimeCts.Token);
-            using var form = new SettingsForm(current, _validationService, AdministratorHelper.IsAdministrator());
-            if (form.ShowDialog() != DialogResult.OK || form.ResultSettings is null)
-            {
-                return;
-            }
-
-            await _settingsStore.SaveAsync(form.ResultSettings, _lifetimeCts.Token);
-            try
-            {
-                _startupManager.SetEnabled(form.ResultSettings.StartWithWindows);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error("設定 Windows 開機啟動失敗。", ex);
-                MessageBox.Show(
-                    $"設定已儲存，但開機啟動設定失敗：{ex.Message}",
-                    "Yi He Lee",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-
-            SetStatus("設定已儲存，等待每日台北時間 13:35");
+            _mainForm = new MainForm(
+                current,
+                _validationService,
+                SaveSettingsAsync,
+                RunNowAsync,
+                OpenConfiguredExcelAsync,
+                ShowHistoricalPriceForm,
+                () => OpenFolder(_paths.LogDirectory));
         }
-        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+
+        _mainForm.ShowAndActivate();
+    }
+
+    private async Task<bool> ConfirmExcelSafetyAsync(CancellationToken cancellationToken)
+    {
+        if (_isExiting)
         {
+            return false;
+        }
+
+        await ShowMainWindowAsync();
+        if (_mainForm is null)
+        {
+            return false;
+        }
+
+        return await _mainForm.ConfirmExcelSafetyAsync(cancellationToken);
+    }
+
+    private async Task SaveSettingsAsync(AppSettings settings)
+    {
+        await _settingsStore.SaveAsync(settings, _lifetimeCts.Token);
+        // 設定儲存後即時同步系統匣選單「歷史收盤價」項目的顯示狀態，不需重啟程式。
+        _historicalPriceItem.Visible = settings.ShowHistoricalPriceButton;
+        try
+        {
+            _startupManager.SetEnabled(settings.StartWithWindows);
         }
         catch (Exception ex)
         {
-            _logger.Error("開啟或儲存設定失敗。", ex);
-            MessageBox.Show(ex.Message, "Yi He Lee－設定失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _logger.Error("設定 Windows 開機啟動失敗。", ex);
+            MessageBox.Show(
+                $"設定已儲存，但開機啟動設定失敗：{ex.Message}",
+                "Yi He Lee",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
+
+        SetStatus("設定已儲存，等待每日台北時間 13:35", 0);
     }
 
     private async Task OpenConfiguredExcelAsync()
@@ -262,51 +287,58 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void ShowSuccessCenter(JobRunSummary summary)
+    private async void ShowSuccessCenter(JobRunSummary summary)
     {
-        SetStatus(summary.Message);
+        SetStatus(summary.Message, 100);
         ShowTrayBalloon("Yi He Lee 執行完成", summary.Message, ToolTipIcon.Info);
-        ShowResultForm(ResultCenterForm.CreateSuccess(
-            summary,
-            retryAction: RunNowAsync,
-            openExcelAction: OpenConfiguredExcelAsync));
+        await ShowMainWindowAsync();
+        _mainForm!.SwitchToResultsTab(summary, isSuccess: true);
     }
 
-    private void ShowFailureCenter(JobRunSummary summary)
+    private async void ShowFailureCenter(JobRunSummary summary)
     {
-        SetStatus($"失敗：{summary.Message}");
+        SetStatus($"失敗：{summary.Message}", 0);
         ShowTrayBalloon("Yi He Lee 執行失敗", summary.Message, ToolTipIcon.Error);
-        ShowResultForm(ResultCenterForm.CreateFailure(
-            summary,
-            retryAction: RunNowAsync,
-            settingsAction: ShowSettingsAsync,
-            logFolderAction: () =>
-            {
-                OpenFolder(_paths.LogDirectory);
-                return Task.CompletedTask;
-            }));
+        await ShowMainWindowAsync();
+        _mainForm!.SwitchToResultsTab(summary, isSuccess: false);
     }
 
-    private void ShowResultForm(ResultCenterForm form)
+    private void ShowHistoricalPriceForm()
     {
-        if (_resultForm is not null && !_resultForm.IsDisposed)
+        if (_isExiting)
         {
-            _resultForm.Close();
+            return;
         }
 
-        _resultForm = form;
-        _resultForm.FormClosed += (_, _) => _resultForm = null;
-        _resultForm.Show();
-        _resultForm.BringToFront();
-        _resultForm.Activate();
+        if (_historicalPriceForm is { IsDisposed: false })
+        {
+            _historicalPriceForm.BringToFront();
+            _historicalPriceForm.Activate();
+            return;
+        }
+
+        _historicalPriceForm = new HistoricalPriceForm(
+            _marketDataRepository,
+            _stockHistoryImportService,
+            _stockPriceImportRepository,
+            _settingsStore,
+            _logger,
+            _crawlerRegistry,
+            _stockPriceValidationService);
+        _historicalPriceForm.FormClosed += (_, _) => _historicalPriceForm = null;
+        _historicalPriceForm.Show();
     }
 
-    private void SetStatus(string message)
+    private void SetStatus(string message, int percentComplete)
     {
         var oneLine = message.ReplaceLineEndings(" ").Trim();
         _statusItem.Text = oneLine.Length > 80 ? $"狀態：{oneLine[..77]}..." : $"狀態：{oneLine}";
         _notifyIcon.Text = "Yi He Lee－" + (oneLine.Length > 45 ? oneLine[..45] : oneLine);
+        _mainForm?.UpdateStatus(oneLine, percentComplete);
     }
+
+    /// <summary>長時間作業（例如 MA120 歷史回補）的逐日細節進度，顯示於操作頁進度條下方。</summary>
+    private void SetProgressDetail(string message) => _mainForm?.UpdateProgressDetail(message);
 
     private void ShowTrayBalloon(string title, string text, ToolTipIcon icon)
     {
@@ -352,7 +384,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         finally
         {
-            _resultForm?.Close();
+            _mainForm?.AllowRealClose();
+            _mainForm?.Close();
+            _historicalPriceForm?.Close();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
             _dispatcherForm.Dispose();
@@ -365,6 +399,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (disposing)
         {
             _userInteraction.StatusChanged -= SetStatus;
+            _userInteraction.ProgressDetailChanged -= SetProgressDetail;
             _userInteraction.Succeeded -= ShowSuccessCenter;
             _userInteraction.Failed -= ShowFailureCenter;
             _lifetimeCts.Dispose();

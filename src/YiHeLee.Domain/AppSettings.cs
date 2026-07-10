@@ -24,6 +24,21 @@ public sealed class AppSettings
     public bool CreateOutputWorksheetIfMissing { get; set; } = true;
     public bool ShowExcelSafetyPrompt { get; set; } = true;
 
+    /// <summary>找不到已開啟的指定活頁簿時，自動用 Excel 開啟該檔案，不再要求使用者手動開啟。</summary>
+    public bool AutoOpenWorkbookIfClosed { get; set; } = true;
+
+    /// <summary>主視窗「操作」頁籤按鈕、系統匣（右下角）選單「歷史收盤價」項目是否顯示。預設隱藏。</summary>
+    public bool ShowHistoricalPriceButton { get; set; } = false;
+
+    /// <summary>主視窗「操作」頁籤是否顯示執行中的文字狀態（顯示目前正在擷取／計算哪個步驟）。
+    /// 依使用者要求預設顯示；設為 false 時只呈現 0～100% 進度條。與 ShowHistoricalPriceButton 一樣，
+    /// 故意不放進設定頁籤 UI，只是 config 旗標。</summary>
+    public bool ShowStatusText { get; set; } = true;
+
+    /// <summary>設定頁是否顯示「資料來源網址」頁籤（鉅亨網來源清單）。預設隱藏，避免使用者誤改來源設定；
+    /// 與 ShowHistoricalPriceButton 一樣，故意不放進設定頁籤 UI，只是 config 旗標，儲存設定時原樣保留。</summary>
+    public bool ShowSourceSettings { get; set; } = false;
+
     /// <summary>
     /// 持股列若「股名」儲存格套用這些 RGB 填滿色，就視為人工標記的不判斷資料。
     /// 預設 #92D050 為使用者提供範例中的綠色。
@@ -38,7 +53,41 @@ public sealed class AppSettings
     /// <summary>官方（TWSE／TPEx）每日收盤價與均線計算相關設定。</summary>
     public OfficialMarketDataSettings OfficialMarketData { get; set; } = new();
 
+    /// <summary>歷史收盤價手動回補（歷史收盤價查詢畫面「立即回補」）相關設定。</summary>
+    public StockHistoryImportOptions StockHistoryImport { get; set; } = new();
+
     public static AppSettings CreateDefault() => new();
+}
+
+/// <summary>
+/// 歷史收盤價手動回補設定：可回補的交易日數、並行上限、逾時與重試皆可設定，
+/// 但「當日日期驗證」「不得回抓前一交易日頂替」等規則不受本設定影響。
+/// </summary>
+public sealed class StockHistoryImportOptions
+{
+    /// <summary>預設回補的有效交易日數。</summary>
+    public int DefaultTradingDays { get; set; } = 5;
+
+    /// <summary>畫面可選擇的最大有效交易日數（自訂上限）。</summary>
+    public int MaxSelectableTradingDays { get; set; } = 250;
+
+    /// <summary>同時並行的抓取工作數上限；預設4，規範上限為8。</summary>
+    public int MaxConcurrency { get; set; } = 4;
+
+    /// <summary>單次 HTTP 請求逾時秒數。</summary>
+    public int RequestTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>暫時性錯誤（HTTP 408／429／5xx、網路中斷、逾時）最大重試次數。</summary>
+    public int MaxRetryCount { get; set; } = 3;
+
+    /// <summary>指數退避的基礎秒數（第1次重試等待此秒數，之後倍增，例如2、4、8秒）。</summary>
+    public int RetryBaseDelaySeconds { get; set; } = 2;
+
+    /// <summary>依規範上限（不得超過8）與最小值1校正並行數。</summary>
+    public int ClampedMaxConcurrency() => Math.Clamp(MaxConcurrency, 1, 8);
+
+    /// <summary>依 MaxSelectableTradingDays 與最小值1校正使用者實際選擇的交易日數。</summary>
+    public int ClampTradingDays(int requested) => Math.Clamp(requested, 1, Math.Max(1, MaxSelectableTradingDays));
 }
 
 /// <summary>
@@ -54,6 +103,13 @@ public sealed class OfficialMarketDataSettings
     /// <summary>TPEx 官方每日收盤行情（可指定日期）端點，{0} 置換為民國年/月/日。</summary>
     public string TpexDailyCloseUrlTemplate { get; set; } =
         "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&d={0}&s=0,asc,0";
+
+    /// <summary>
+    /// TPEx 官方興櫃股票當日行情端點（OpenAPI，無日期參數，僅回報呼叫當下的即時快照）。
+    /// 只能用於每日排程即時累積，不支援指定歷史日期，因此不參與歷史回補。
+    /// </summary>
+    public string EmergingDailyCloseUrl { get; set; } =
+        "https://www.tpex.org.tw/openapi/v1/tpex_esb_latest_statistics";
 
     public int HttpTimeoutSeconds { get; set; } = 30;
     public int HttpShortRetryCount { get; set; } = 3;

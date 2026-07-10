@@ -19,6 +19,7 @@ public sealed class HistoricalBackfillJob
     public Task<IReadOnlyList<OfficialPriceBatchSummary>> RunAsync(
         DateOnly targetDate,
         OfficialMarketDataSettings settings,
-        CancellationToken cancellationToken)
-        => _marketPriceService.BackfillHistoryAsync(targetDate, settings, cancellationToken);
+        CancellationToken cancellationToken,
+        Action<string>? reportProgress = null)
+        => _marketPriceService.BackfillHistoryAsync(targetDate, settings, cancellationToken, reportProgress);
 }

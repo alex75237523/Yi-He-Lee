@@ -135,5 +135,11 @@ public sealed class MovingAverageServiceTests
 
         public Task<bool> HasSucceededBatchAsync(OfficialPriceJobType jobType, DateOnly targetDate, string sourceProvider, CancellationToken cancellationToken)
             => throw new NotSupportedException();
+
+        public Task<StockDailyPriceQueryResult> QueryDailyPricesAsync(StockDailyPriceQueryFilter filter, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<DateOnly?> GetLatestTradeDateAsync(CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 }

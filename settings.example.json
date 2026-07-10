@@ -14,17 +14,29 @@
   "RequireBackupBeforeExcelWrite": true,
   "CreateOutputWorksheetIfMissing": true,
   "ShowExcelSafetyPrompt": true,
+  "AutoOpenWorkbookIfClosed": true,
+  "ShowHistoricalPriceButton": false,
+  "ShowStatusText": false,
   "ExcludedHoldingFillColors": ["#92D050"],
   "ExcludedHoldingTextMarkers": ["不判斷", "不用判斷", "忽略", "已出場", "暫停判斷"],
   "OfficialMarketData": {
     "TwseDailyCloseUrlTemplate": "https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={0}&type=ALLBUT0999",
     "TpexDailyCloseUrlTemplate": "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&d={0}&s=0,asc,0",
+    "EmergingDailyCloseUrl": "https://www.tpex.org.tw/openapi/v1/tpex_esb_latest_statistics",
     "HttpTimeoutSeconds": 30,
     "HttpShortRetryCount": 3,
     "HttpShortRetryDelaySeconds": 5,
     "RequiredTradingDaysForMa120": 120,
     "MaxBackfillLookbackCalendarDays": 280,
     "BackfillThrottleMillisecondsBetweenRequests": 300
+  },
+  "StockHistoryImport": {
+    "DefaultTradingDays": 5,
+    "MaxSelectableTradingDays": 250,
+    "MaxConcurrency": 4,
+    "RequestTimeoutSeconds": 30,
+    "MaxRetryCount": 3,
+    "RetryBaseDelaySeconds": 2
   },
   "Sources": [
     {

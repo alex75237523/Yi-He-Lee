@@ -1,0 +1,5 @@
+[
+{"Date":"1150709","Time":"163006","SecuritiesCompanyCode":"4573","CompanyName":"高明鐵","PreviousAveragePrice":"390.28","BuyingPrice":"407.5","BuyingQuantity":"2000","SellingPrice":"409.5","SellingQuantity":"6000","Highest":"411.5","Lowest":"391.5","Average":"403.17","LatestPrice":"408.00","Buy/Sell":"S","SuspendTime":"000000","TransactionVolume":"288743","ApplyingDate":"","ApplyingStatus":""},
+{"Date":"1150709","Time":"163006","SecuritiesCompanyCode":"6990","CompanyName":"華鉬","PreviousAveragePrice":"120.00","BuyingPrice":"118.00","BuyingQuantity":"1000","SellingPrice":"122.00","SellingQuantity":"1000","Highest":"123.00","Lowest":"117.00","Average":"120.50","LatestPrice":"1,220.00","Buy/Sell":"B","SuspendTime":"000000","TransactionVolume":"10000","ApplyingDate":"","ApplyingStatus":""},
+{"Date":"1150709","Time":"163006","SecuritiesCompanyCode":"1234","CompanyName":"暫停交易範例","PreviousAveragePrice":"50.00","BuyingPrice":"","BuyingQuantity":"0","SellingPrice":"","SellingQuantity":"0","Highest":"","Lowest":"","Average":"","LatestPrice":"","Buy/Sell":"","SuspendTime":"090000","TransactionVolume":"0","ApplyingDate":"","ApplyingStatus":""}
+]

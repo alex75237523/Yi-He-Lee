@@ -16,6 +16,7 @@ public sealed class DailyJobService
     private readonly IAppLogger _logger;
     private readonly DailyMarketDataJob _dailyMarketDataJob;
     private readonly HistoricalBackfillJob _historicalBackfillJob;
+    private readonly IMarketPriceService _marketPriceService;
     private readonly IMovingAverageService _movingAverageService;
     private readonly StrategyEvaluationService _strategyEvaluationService;
     private readonly SettingsValidationService _settingsValidationService;
@@ -32,6 +33,7 @@ public sealed class DailyJobService
         IAppLogger logger,
         DailyMarketDataJob dailyMarketDataJob,
         HistoricalBackfillJob historicalBackfillJob,
+        IMarketPriceService marketPriceService,
         IMovingAverageService movingAverageService,
         StrategyEvaluationService strategyEvaluationService,
         SettingsValidationService settingsValidationService)
@@ -46,6 +48,7 @@ public sealed class DailyJobService
         _logger = logger;
         _dailyMarketDataJob = dailyMarketDataJob;
         _historicalBackfillJob = historicalBackfillJob;
+        _marketPriceService = marketPriceService;
         _movingAverageService = movingAverageService;
         _strategyEvaluationService = strategyEvaluationService;
         _settingsValidationService = settingsValidationService;
@@ -53,7 +56,7 @@ public sealed class DailyJobService
 
     public bool IsRunning => _singleRunLock.CurrentCount == 0;
 
-    public async Task<JobRunSummary> RunAsync(bool isManualRun, CancellationToken cancellationToken)
+    public async Task<JobRunSummary> RunAsync(bool isManualRun, CancellationToken cancellationToken, DateOnly? manualTargetDate = null)
     {
         if (!await _singleRunLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
@@ -61,7 +64,7 @@ public sealed class DailyJobService
         }
 
         var startedAt = _clock.GetTaipeiNow();
-        var targetDate = DateOnly.FromDateTime(startedAt.DateTime);
+        var targetDate = manualTargetDate ?? DateOnly.FromDateTime(startedAt.DateTime);
         Guid jobId = Guid.Empty;
         var attemptNumber = 1;
         var totalCrawled = 0;
@@ -84,7 +87,7 @@ public sealed class DailyJobService
             // 步驟一：鉅亨網多頭／空頭排列完整清單（集中＋店頭），僅作清單保存與交叉驗證，不再是正式均價來源。
             // 均線正式判斷已改依 TWSE／TPEx 官方資料計算，鉅亨網本步驟採 best-effort：
             // 網站尚未更新或擷取失敗時，只記錄提醒訊息並繼續執行官方價格與策略流程，不得整批失敗。
-            _userInteraction.ShowStatus($"正在擷取 {targetDate:yyyy-MM-dd} 鉅亨網多頭／空頭排列清單……");
+            _userInteraction.ShowStatus($"正在擷取 {targetDate:yyyy-MM-dd} 鉅亨網多頭／空頭排列清單……", 10);
             _logger.Info($"工作 {jobId} 開始。目標日期={targetDate:yyyy-MM-dd}，第 {attemptNumber} 次。");
             IReadOnlyList<CrawlBatch> cnyesBatches = [];
             string? cnyesReminder = null;
@@ -105,7 +108,7 @@ public sealed class DailyJobService
             }
 
             // 步驟二：TWSE／TPEx 官方每日收盤價；來源資料日期必須等於 targetDate 才可寫入正式資料。
-            _userInteraction.ShowStatus($"正在擷取 {targetDate:yyyy-MM-dd} TWSE／TPEx 官方每日收盤價……");
+            _userInteraction.ShowStatus($"正在擷取 {targetDate:yyyy-MM-dd} TWSE／TPEx 官方每日收盤價……", 25);
             var priceBatches = await _dailyMarketDataJob.RunAsync(targetDate, settings.OfficialMarketData, cancellationToken).ConfigureAwait(false);
             EnsureOfficialPriceBatchesSucceeded(priceBatches, targetDate);
 
@@ -127,11 +130,38 @@ public sealed class DailyJobService
                 return holidaySummary;
             }
 
-            // 步驟三：歷史資料回補（採 best-effort；個別股票即使回補失敗，仍以 InsufficientHistory 反映在均線結果，不阻擋整批）。
+            // 步驟二之二：TPEx 興櫃股票當日行情。本端點沒有日期參數、無法歷史回補，只能逐日累積；
+            // 採 best-effort，失敗只記錄提醒，不得影響上市／上櫃已驗證成功的正式判斷與 Excel 寫入。
+            string? emergingReminder = null;
             try
             {
-                _userInteraction.ShowStatus("正在檢查並回補 MA120 所需歷史資料……");
-                await _historicalBackfillJob.RunAsync(targetDate, settings.OfficialMarketData, cancellationToken).ConfigureAwait(false);
+                _userInteraction.ShowStatus($"正在擷取 {targetDate:yyyy-MM-dd} TPEx 興櫃股票當日行情……", 35);
+                var emergingSummary = await _marketPriceService.FetchAndSaveSingleAsync(
+                    OfficialPriceJobType.DailyMarketData, targetDate, MarketType.Emerging, settings.OfficialMarketData, cancellationToken).ConfigureAwait(false);
+                if (emergingSummary.Status is not (OfficialPriceBatchStatus.Succeeded or OfficialPriceBatchStatus.Holiday))
+                {
+                    emergingReminder = $"TPEx 興櫃股票當日行情本次未成功更新，僅影響興櫃持股判斷，不影響上市／上櫃正式判斷（原因：{emergingSummary.ErrorMessage}）。";
+                    _logger.Warning(emergingReminder);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                emergingReminder = $"TPEx 興櫃股票當日行情本次未成功更新，僅影響興櫃持股判斷，不影響上市／上櫃正式判斷（原因：{ex.Message}）。";
+                _logger.Warning(emergingReminder);
+            }
+
+            // 步驟三：歷史資料回補（採 best-effort；個別股票即使回補失敗，仍以 InsufficientHistory 反映在均線結果，不阻擋整批）。
+            // 回補可能耗時數分鐘，逐日細節進度透過 ShowProgressDetail 顯示於畫面（不受 ShowStatusText 旗標影響）。
+            try
+            {
+                _userInteraction.ShowStatus("正在檢查並回補 MA120 所需歷史資料……", 50);
+                await _historicalBackfillJob.RunAsync(
+                    targetDate, settings.OfficialMarketData, cancellationToken,
+                    detail => _userInteraction.ShowProgressDetail(detail)).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -140,6 +170,11 @@ public sealed class DailyJobService
             catch (Exception ex)
             {
                 _logger.Warning($"歷史資料回補發生例外，本次僅記錄警告並繼續：{ex.Message}");
+            }
+            finally
+            {
+                // 回補結束（成功或失敗）即清除細節顯示，避免殘留在畫面上。
+                _userInteraction.ShowProgressDetail(string.Empty);
             }
 
             if (settings.ShowExcelSafetyPrompt)
@@ -151,12 +186,12 @@ public sealed class DailyJobService
                 }
             }
 
-            _userInteraction.ShowStatus("正在讀取 Excel 客戶持股……");
+            _userInteraction.ShowStatus("正在讀取 Excel 客戶持股……", 65);
             var holdings = await _excelWorkbookService.ReadHoldingsAsync(settings, targetDate, cancellationToken).ConfigureAwait(false);
             holdingCount = holdings.Count;
 
             // 步驟四：依官方收盤價計算 MA5／MA20／MA60／MA120（有效交易日，非日曆日）。
-            _userInteraction.ShowStatus("正在計算均線……");
+            _userInteraction.ShowStatus("正在計算均線……", 80);
             var stockCodes = holdings.Select(x => StrategyEvaluationService.NormalizeStockCode(x.StockCode)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             var movingAverages = await _movingAverageService.CalculateManyAsync(stockCodes, targetDate, cancellationToken).ConfigureAwait(false);
             await _marketDataRepository.SaveMovingAverageResultsAsync(targetDate, movingAverages, cancellationToken).ConfigureAwait(false);
@@ -169,14 +204,19 @@ public sealed class DailyJobService
 
             await _repository.SaveHoldingsAndAlertsAsync(jobId, targetDate, settings.WorkbookPath, holdings, alerts, cancellationToken).ConfigureAwait(false);
 
-            _userInteraction.ShowStatus("正在寫入「每日五日均價策略」頁籤……");
+            _userInteraction.ShowStatus("正在寫入「每日五日均價策略」頁籤……", 95);
             await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, alerts, cancellationToken).ConfigureAwait(false);
 
             var completedAt = _clock.GetTaipeiNow();
-            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx 官方收盤價。";
+            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價。";
             if (cnyesReminder is not null)
             {
                 successMessage += $" 提醒：{cnyesReminder}";
+            }
+
+            if (emergingReminder is not null)
+            {
+                successMessage += $" 提醒：{emergingReminder}";
             }
 
             var success = new JobRunSummary(

@@ -34,6 +34,7 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
         await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await ExecuteNonQueryAsync(connection, null, SchemaSql, cancellationToken).ConfigureAwait(false);
         await MigrateStockDailyPriceColumnsAsync(connection, cancellationToken).ConfigureAwait(false);
+        await MigrateStockMovingAverageColumnsAsync(connection, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -76,6 +77,44 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
 
             await using var alterCommand = connection.CreateCommand();
             alterCommand.CommandText = $"ALTER TABLE StockDailyPrice ADD COLUMN {name} {definition};";
+            await alterCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// 逐檔歷史完整性診斷欄位（最新收盤日期、缺少原因）。既有資料庫的 StockMovingAverage 表
+    /// 只有 AvailableTradingDayCount／CalculationStatus，本次新增這兩欄供 Excel「最新收盤日期」
+    /// 「缺少原因」欄位使用；以 PRAGMA table_info 檢查後用 ALTER TABLE ADD COLUMN 安全新增，
+    /// 不刪除或覆蓋既有資料列。
+    /// </summary>
+    private static async Task MigrateStockMovingAverageColumnsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        var existingColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA table_info(StockMovingAverage);";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                existingColumns.Add(reader.GetString(1));
+            }
+        }
+
+        var columnsToAdd = new (string Name, string Definition)[]
+        {
+            ("LatestAvailableTradeDate", "TEXT NULL"), // 最新一筆已知有效收盤價日期
+            ("MissingReason", "TEXT NULL")              // 均線資料不足／回補失敗等缺少原因說明
+        };
+
+        foreach (var (name, definition) in columnsToAdd)
+        {
+            if (existingColumns.Contains(name))
+            {
+                continue;
+            }
+
+            await using var alterCommand = connection.CreateCommand();
+            alterCommand.CommandText = $"ALTER TABLE StockMovingAverage ADD COLUMN {name} {definition};";
             await alterCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
     }
@@ -333,9 +372,11 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
 
                 const string sql = """
                     INSERT INTO StockMovingAverage
-                        (StockId, TradeDate, ClosePrice, Ma5, Ma20, Ma60, Ma120, AvailableTradingDayCount, CalculationStatus, CreatedAt, UpdatedAt)
+                        (StockId, TradeDate, ClosePrice, Ma5, Ma20, Ma60, Ma120, AvailableTradingDayCount, CalculationStatus,
+                         LatestAvailableTradeDate, MissingReason, CreatedAt, UpdatedAt)
                     VALUES
-                        ($stockId, $tradeDate, $closePrice, $ma5, $ma20, $ma60, $ma120, $availableCount, $status, $now, $now)
+                        ($stockId, $tradeDate, $closePrice, $ma5, $ma20, $ma60, $ma120, $availableCount, $status,
+                         $latestAvailableTradeDate, $missingReason, $now, $now)
                     ON CONFLICT(StockId, TradeDate) DO UPDATE SET
                         ClosePrice = excluded.ClosePrice,
                         Ma5 = excluded.Ma5,
@@ -344,6 +385,8 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
                         Ma120 = excluded.Ma120,
                         AvailableTradingDayCount = excluded.AvailableTradingDayCount,
                         CalculationStatus = excluded.CalculationStatus,
+                        LatestAvailableTradeDate = excluded.LatestAvailableTradeDate,
+                        MissingReason = excluded.MissingReason,
                         UpdatedAt = excluded.UpdatedAt;
                     """;
                 await using var command = connection.CreateCommand();
@@ -358,6 +401,8 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
                 command.Parameters.AddWithValue("$ma120", (object?)result.MovingAverage120 ?? DBNull.Value);
                 command.Parameters.AddWithValue("$availableCount", result.AvailableTradingDayCount);
                 command.Parameters.AddWithValue("$status", (int)result.CalculationStatus);
+                command.Parameters.AddWithValue("$latestAvailableTradeDate", result.LatestAvailableTradeDate is null ? DBNull.Value : ToDate(result.LatestAvailableTradeDate.Value));
+                command.Parameters.AddWithValue("$missingReason", (object?)result.MissingReason ?? DBNull.Value);
                 command.Parameters.AddWithValue("$now", now);
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -374,7 +419,8 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
     public async Task<IReadOnlyList<MovingAverageResult>> GetMovingAverageResultsAsync(DateOnly tradeDate, CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT s.StockCode, m.TradeDate, m.ClosePrice, m.Ma5, m.Ma20, m.Ma60, m.Ma120, m.AvailableTradingDayCount, m.CalculationStatus
+            SELECT s.StockCode, m.TradeDate, m.ClosePrice, m.Ma5, m.Ma20, m.Ma60, m.Ma120, m.AvailableTradingDayCount, m.CalculationStatus,
+                   m.LatestAvailableTradeDate, m.MissingReason
             FROM StockMovingAverage m
             INNER JOIN StockMaster s ON s.Id = m.StockId
             WHERE m.TradeDate = $tradeDate;
@@ -398,7 +444,9 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
                 reader.IsDBNull(5) ? null : reader.GetDecimal(5),
                 reader.IsDBNull(6) ? null : reader.GetDecimal(6),
                 reader.GetInt32(7),
-                (CalculationStatus)reader.GetInt32(8)));
+                (CalculationStatus)reader.GetInt32(8),
+                reader.IsDBNull(9) ? null : DateOnly.ParseExact(reader.GetString(9), "yyyy-MM-dd", CultureInfo.InvariantCulture),
+                reader.IsDBNull(10) ? null : reader.GetString(10)));
         }
 
         return result;
@@ -754,8 +802,10 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
             Ma20 NUMERIC NULL,                               -- 20日均線
             Ma60 NUMERIC NULL,                                -- 60日均線
             Ma120 NUMERIC NULL,                               -- 120日均線
-            AvailableTradingDayCount INTEGER NOT NULL,        -- 實際可用有效交易日數
-            CalculationStatus INTEGER NOT NULL,               -- 1正常／2交易日數不足
+            AvailableTradingDayCount INTEGER NOT NULL,        -- 實際可用有效交易日數（逐檔計算，非市場整體）
+            CalculationStatus INTEGER NOT NULL,               -- 1正常／2交易日數不足／3當日收盤價缺失／4歷史回補失敗
+            LatestAvailableTradeDate TEXT NULL,               -- 最新一筆已知有效收盤價日期
+            MissingReason TEXT NULL,                          -- 均線資料不足／回補失敗等缺少原因說明
             CreatedAt TEXT NOT NULL,
             UpdatedAt TEXT NOT NULL,
             FOREIGN KEY (StockId) REFERENCES StockMaster(Id),

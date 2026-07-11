@@ -179,6 +179,96 @@ public sealed class MarketPriceServiceTests
     }
 
     [Fact]
+    public async Task 市場整體已有足夠交易日但指定持股仍不足時必須繼續回補()
+    {
+        // 上櫃市場整體已有 3 個交易日（由另一檔股票貢獻），但持股 5351 只有 1 筆；
+        // 完成判斷不得只看市場整體，必須逐檔確認 5351 也達標才可停止回補。
+        var twse = FakeTwseProvider.EchoRequestedDate();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 3,
+            MaxBackfillLookbackCalendarDays = 10,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        foreach (var date in new[] { Weekday.AddDays(-1), Weekday.AddDays(-2), Weekday.AddDays(-3) })
+        {
+            repository.SavedPrices.Add(CreateSavedPrice("6488", "環球晶", MarketType.Otc, date));
+        }
+        repository.SavedPrices.Add(CreateSavedPrice("5351", "鈺創", MarketType.Otc, Weekday.AddDays(-1)));
+
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
+
+        await service.BackfillHistoryAsync(
+            Weekday, settings, CancellationToken.None,
+            otcStockCodes: ["5351"]);
+
+        // 市場整體交易日數（3）已足夠，但因逐檔檢查 5351 仍不足，仍必須繼續呼叫 TPEx 回補。
+        Assert.NotEmpty(tpex.RequestedDates);
+    }
+
+    [Fact]
+    public async Task 同市場A股票已足夠B股票不足時仍確保B的缺日被補齊()
+    {
+        var twse = FakeTwseProvider.EchoRequestedDate();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 3,
+            MaxBackfillLookbackCalendarDays = 10,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        foreach (var date in new[] { Weekday.AddDays(-1), Weekday.AddDays(-2), Weekday.AddDays(-3) })
+        {
+            repository.SavedPrices.Add(CreateSavedPrice("6488", "環球晶", MarketType.Otc, date));
+        }
+        // B 股票（5351）完全沒有資料。
+
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
+
+        await service.BackfillHistoryAsync(
+            Weekday, settings, CancellationToken.None,
+            otcStockCodes: ["6488", "5351"]);
+
+        // 回補為整批下載（市場層級效率），因此只要有任何一檔（5351）不足，該市場當日仍會被完整抓取，
+        // 抓取結果（實際官方端點會回傳整批市場資料）即可讓 5351 缺口一併補齊；此處驗證確實有繼續抓取，
+        // 不會因為 6488 已足夠就誤判整批已完成。
+        Assert.True(tpex.RequestedDates.Count >= 3);
+    }
+
+    [Fact]
+    public async Task 未指定持股代碼時維持既有僅檢查市場整體交易日數行為()
+    {
+        // 向下相容：listedStockCodes／otcStockCodes 皆未指定時，行為必須與修正前一致，只看市場整體。
+        var twse = FakeTwseProvider.EchoRequestedDate();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 3,
+            MaxBackfillLookbackCalendarDays = 10,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        foreach (var date in new[] { Weekday.AddDays(-1), Weekday.AddDays(-2), Weekday.AddDays(-3) })
+        {
+            repository.SavedPrices.Add(CreateSavedPrice("2330", "台積電", MarketType.Listed, date));
+            repository.SavedPrices.Add(CreateSavedPrice("5351", "鈺創", MarketType.Otc, date));
+        }
+
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None);
+
+        Assert.Empty(twse.RequestedDates);
+        Assert.Empty(tpex.RequestedDates);
+    }
+
+    [Fact]
     public async Task 歷史回補遇到DB已有收盤價時不再呼叫官方來源()
     {
         var twse = FakeTwseProvider.EchoRequestedDate();
@@ -233,6 +323,28 @@ public sealed class MarketPriceServiceTests
         Assert.DoesNotContain(repository.SavedPrices, x => x.SourceProvider == "TPEx興櫃");
     }
 
+    [Fact]
+    public async Task 回補過程官方來源發生例外時該市場批次記為失敗以利產生逐檔缺失狀態()
+    {
+        // 官方端點逾時／格式異常等例外會被捕捉並記為 Failed（而非直接讓整個回補流程中斷），
+        // DailyJobService 會依此批次狀態把仍不足的股票標示為「歷史回補失敗」而非泛稱的「歷史資料不足」。
+        var twse = FakeTwseProvider.WithException();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 2,
+            MaxBackfillLookbackCalendarDays = 5,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
+
+        var summaries = await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None);
+
+        Assert.Contains(summaries, x => x.MarketType == MarketType.Listed && x.Status == OfficialPriceBatchStatus.Failed);
+    }
+
     private sealed class FakeClock : IClock
     {
         private readonly DateOnly _today;
@@ -261,6 +373,7 @@ public sealed class MarketPriceServiceTests
         public static FakeTwseProvider WithMismatchedDate(DateOnly returnedDate) => new(date => Success(MarketType.Listed, "TWSE", date, returnedDate));
         public static FakeTwseProvider WithExplicitHoliday() => new(date => Holiday(MarketType.Listed, "TWSE", date));
         public static FakeTwseProvider EchoRequestedDate() => new(date => Success(MarketType.Listed, "TWSE", date, date));
+        public static FakeTwseProvider WithException() => new(_ => throw new InvalidOperationException("模擬官方端點逾時或格式異常。"));
 
         public Task<OfficialPriceFetchResult> FetchDailyCloseAsync(DateOnly requestedDate, OfficialMarketDataSettings settings, CancellationToken cancellationToken)
         {

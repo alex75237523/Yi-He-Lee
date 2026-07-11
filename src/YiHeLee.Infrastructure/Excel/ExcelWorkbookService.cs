@@ -11,7 +11,10 @@ namespace YiHeLee.Infrastructure.Excel;
 
 public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 {
-    private const int OutputColumnCount = 7;
+    // 代碼／名稱／市場別／收盤價／5日均價／20日均價／60日均價／120日均價／有效交易日數／
+    // 最新收盤日期／計算狀態／缺少原因／來源頁籤／原始列號，共 14 欄（A～N）。
+    private const int OutputColumnCount = 14;
+    private const string OutputRangeLastColumn = "N";
     private readonly string _backupDirectory;
     private readonly IAppLogger _logger;
     private readonly HoldingRowExclusionService _holdingRowExclusionService;
@@ -144,18 +147,41 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 
             foreach (var header in headers)
             {
+                var consecutiveBlankRows = 0;
                 for (var relativeRow = header.RelativeRow + 1; relativeRow <= header.EndRelativeRow; relativeRow++)
                 {
                     var absoluteRow = firstRow + relativeRow - 1;
                     var absoluteCodeColumn = firstColumn + header.CodeColumn - 1;
                     var stockCode = ReadDisplayedCellText(worksheet, absoluteRow, absoluteCodeColumn);
                     stockCode = NormalizeStockCode(stockCode);
-                    if (!StockCodeRegex().IsMatch(stockCode))
+                    var stockName = accessor.GetString(relativeRow, header.NameColumn);
+
+                    // 連續空白列（代碼與名稱皆空白）視為本段持股表格已結束，明確區塊結束標記，
+                    // 不得繼續往下把後面不相關的內容誤判為持股。
+                    if (string.IsNullOrWhiteSpace(stockCode) && string.IsNullOrWhiteSpace(stockName))
+                    {
+                        consecutiveBlankRows++;
+                        if (consecutiveBlankRows >= 2)
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    consecutiveBlankRows = 0;
+
+                    // 股票名稱空白時不得建立有效持股，即使代碼欄位剛好符合格式（可能是無關的殘留數值）。
+                    if (string.IsNullOrWhiteSpace(stockName))
                     {
                         continue;
                     }
 
-                    var stockName = accessor.GetString(relativeRow, header.NameColumn);
+                    if (!IsAcceptableStockCodeCandidate(stockCode))
+                    {
+                        continue;
+                    }
+
                     var absoluteNameColumn = firstColumn + header.NameColumn - 1;
                     var fillColor = ReadCellFillColorHex(worksheet, absoluteRow, absoluteNameColumn);
                     var rowTexts = Enumerable.Range(1, columnCount)
@@ -253,8 +279,8 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 .ToArray();
 
             var lastClearRow = Math.Max(10_000, ordered.Length + 20);
-            clearRange = worksheet.Range[$"A1:G{lastClearRow}"];
-            // 先解除範圍內殘留的合併儲存格，否則邊界跨出 A:G 的合併儲存格會讓 Clear() 拋出
+            clearRange = worksheet.Range[$"A1:{OutputRangeLastColumn}{lastClearRow}"];
+            // 先解除範圍內殘留的合併儲存格，否則邊界跨出輸出範圍的合併儲存格會讓 Clear() 拋出
             // COMException 0x800A03EC（無法對合併儲存格執行該動作）。MergeCells 在範圍內合併狀態
             // 不一致時會回傳 DBNull，因此不判斷該屬性，直接呼叫 UnMerge()（未合併時為無動作）。
             clearRange.UnMerge();
@@ -265,7 +291,8 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 
             var headers = new[]
             {
-                "代碼", "名稱", "收盤價", "5日均價", "20日均價", "60日均價", "120日均價"
+                "代碼", "名稱", "市場別", "收盤價", "5日均價", "20日均價", "60日均價", "120日均價",
+                "有效交易日數", "最新收盤日期", "計算狀態", "缺少原因", "來源頁籤", "原始列號"
             };
             for (var column = 0; column < headers.Length; column++)
             {
@@ -278,17 +305,24 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 var row = index + 1;
                 matrix[row, 0] = alert.StockCode;
                 matrix[row, 1] = alert.StockName;
-                matrix[row, 2] = alert.ClosePrice;
-                matrix[row, 3] = alert.MovingAverage5;
-                matrix[row, 4] = alert.MovingAverage20;
-                matrix[row, 5] = alert.MovingAverage60;
-                matrix[row, 6] = alert.MovingAverage120;
+                matrix[row, 2] = DescribeMarketType(alert.MarketType);
+                matrix[row, 3] = alert.ClosePrice;
+                matrix[row, 4] = alert.MovingAverage5;
+                matrix[row, 5] = alert.MovingAverage20;
+                matrix[row, 6] = alert.MovingAverage60;
+                matrix[row, 7] = alert.MovingAverage120;
+                matrix[row, 8] = alert.AvailableTradingDayCount;
+                matrix[row, 9] = alert.LatestAvailableTradeDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
+                matrix[row, 10] = alert.DiagnosticStatus ?? DescribeDefaultDiagnosticStatus(alert.AlertKind);
+                matrix[row, 11] = alert.MissingReason ?? string.Empty;
+                matrix[row, 12] = alert.SheetName;
+                matrix[row, 13] = alert.ExcelRow;
             }
 
-            dataRange = worksheet.Range[$"A1:G{rowCount}"];
+            dataRange = worksheet.Range[$"A1:{OutputRangeLastColumn}{rowCount}"];
             dataRange.Value2 = matrix;
 
-            headerRange = worksheet.Range["A1:G1"];
+            headerRange = worksheet.Range[$"A1:{OutputRangeLastColumn}1"];
             headerRange.Font.Bold = true;
             headerRange.HorizontalAlignment = ExcelInterop.XlHAlign.xlHAlignCenter;
             headerRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.FromArgb(189, 215, 238));
@@ -318,23 +352,32 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         ExcelInterop.Range? missingRange = null;
         try
         {
-            allRange = worksheet.Range[$"A1:G{rowCount}"];
+            allRange = worksheet.Range[$"A1:{OutputRangeLastColumn}{rowCount}"];
             allRange.Borders.LineStyle = ExcelInterop.XlLineStyle.xlContinuous;
             allRange.VerticalAlignment = ExcelInterop.XlVAlign.xlVAlignCenter;
             allRange.WrapText = true;
 
+            // 代碼欄位固定文字格式，保留前導零（例如 0050）；均線相關欄位（收盤價～120日均價）為數字格式；
+            // 有效交易日數為整數；其餘診斷欄位（最新收盤日期、計算狀態、缺少原因、來源頁籤）為文字。
             codeColumn = worksheet.Range[$"A2:A{rowCount}"];
             codeColumn.NumberFormat = "@";
-            numericRange = worksheet.Range[$"C2:G{rowCount}"];
+            numericRange = worksheet.Range[$"D2:H{rowCount}"];
             numericRange.NumberFormat = "0.00";
 
             SetColumnWidth(worksheet, "A", 12);
             SetColumnWidth(worksheet, "B", 18);
-            SetColumnWidth(worksheet, "C", 11);
+            SetColumnWidth(worksheet, "C", 10);
             SetColumnWidth(worksheet, "D", 11);
             SetColumnWidth(worksheet, "E", 11);
             SetColumnWidth(worksheet, "F", 11);
-            SetColumnWidth(worksheet, "G", 12);
+            SetColumnWidth(worksheet, "G", 11);
+            SetColumnWidth(worksheet, "H", 12);
+            SetColumnWidth(worksheet, "I", 13);
+            SetColumnWidth(worksheet, "J", 13);
+            SetColumnWidth(worksheet, "K", 14);
+            SetColumnWidth(worksheet, "L", 40);
+            SetColumnWidth(worksheet, "M", 16);
+            SetColumnWidth(worksheet, "N", 10);
 
             // 現價異常與無技術資料的列一律以底色標示，提醒使用者這些持股本次未完成判斷。
             var firstMissingIndex = alerts.ToList().FindIndex(x => x.AlertKind != AlertKind.MovingAverageTriggered);
@@ -342,7 +385,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             {
                 var startRow = firstMissingIndex + 2;
                 var endRow = alerts.Count + 1;
-                missingRange = worksheet.Range[$"A{startRow}:G{endRow}"];
+                missingRange = worksheet.Range[$"A{startRow}:{OutputRangeLastColumn}{endRow}"];
                 missingRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.LightYellow);
             }
         }
@@ -354,6 +397,22 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             ComObject.FinalRelease(allRange);
         }
     }
+
+    private static string DescribeMarketType(MarketType? marketType) => marketType switch
+    {
+        MarketType.Listed => "上市",
+        MarketType.Otc => "上櫃",
+        MarketType.Emerging => "興櫃",
+        _ => "未知"
+    };
+
+    /// <summary>舊資料或未帶入 DiagnosticStatus 時的保底文字，正常流程應一律由 StrategyEvaluationService 帶入。</summary>
+    private static string DescribeDefaultDiagnosticStatus(AlertKind alertKind) => alertKind switch
+    {
+        AlertKind.MovingAverageTriggered => "正常",
+        AlertKind.CurrentPriceInvalid => "Excel現價異常",
+        _ => "歷史資料不足"
+    };
 
     private static void SetColumnWidth(ExcelInterop.Worksheet worksheet, string column, double width)
     {
@@ -551,12 +610,27 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                || hresult == unchecked((int)0x800AC472);
     }
 
-    private static IReadOnlyList<HeaderDefinition> FindActiveHoldingHeaders(
+    /// <summary>
+    /// 「現價」欄位可接受的表頭同義字。目前只有「現價」與「現貨現價」經確認為同一欄位，
+    /// 新增同義字前必須以實際客戶工作簿再次確認，避免誤認不相關欄位。
+    /// </summary>
+    private static readonly HashSet<string> CurrentPriceHeaderSynonyms = new(StringComparer.Ordinal) { "現價", "現貨現價" };
+
+    /// <summary>
+    /// 非持股表格的常見表頭關鍵字（日期、權益數、保證金、小計、總計等）。一列若出現任兩個（或以上）
+    /// 這類關鍵字，視為其他表格（例如權益數／保證金彙總表）的表頭列，作為持股區塊的結束邊界，
+    /// 避免上一段持股表格一路往下掃描、把其他表格內容誤判為持股列。
+    /// </summary>
+    private static readonly string[] OtherTableHeaderKeywords = ["日期", "權益數", "保證金", "小計", "總計", "合計"];
+
+    /// <summary>internal 供 <c>ExcelWorkbookServiceHeaderDetectionTests</c> 在不啟動 Excel COM 的情況下直接驗證表格邊界判斷。</summary>
+    internal static IReadOnlyList<HeaderDefinition> FindActiveHoldingHeaders(
         CellValueAccessor accessor,
         int rowCount,
         int columnCount)
     {
         var candidates = new List<TableHeaderCandidate>();
+        var boundaryRows = new List<int>();
         for (var row = 1; row <= rowCount; row++)
         {
             int? code = null;
@@ -564,15 +638,17 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             int? current = null;
             int? quantity = null;
             var containsExitPrice = false;
+            var otherTableKeywordHits = 0;
 
             for (var column = 1; column <= columnCount; column++)
             {
                 var text = NormalizeHeader(accessor.GetString(row, column));
                 if (text is "代號" or "代碼" or "股票代碼") code = column;
                 if (text is "股名" or "名稱" or "股票名稱") name = column;
-                if (text == "現價") current = column;
+                if (CurrentPriceHeaderSynonyms.Contains(text)) current = column;
                 if (text == "張數") quantity = column;
                 if (text.Contains("出場價", StringComparison.Ordinal)) containsExitPrice = true;
+                if (Array.IndexOf(OtherTableHeaderKeywords, text) >= 0) otherTableKeywordHits++;
             }
 
             // 已出場表頭也要記錄為區塊邊界，避免上一個持股區塊一路掃描到已出場資料。
@@ -585,6 +661,14 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                     current,
                     quantity,
                     containsExitPrice));
+                continue;
+            }
+
+            // 非持股表格（日期／權益數／保證金／小計等彙總表）的表頭列，即使不含代號／名稱／現價，
+            // 也必須視為區塊結束標記，讓上一個持股區塊在此停止，不得延續當成持股。
+            if (otherTableKeywordHits >= 2)
+            {
+                boundaryRows.Add(row);
             }
         }
 
@@ -597,9 +681,9 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 continue;
             }
 
-            var endRelativeRow = index + 1 < candidates.Count
-                ? candidates[index + 1].RelativeRow - 1
-                : rowCount;
+            var nextHoldingHeaderRow = index + 1 < candidates.Count ? candidates[index + 1].RelativeRow : rowCount + 1;
+            var nextBoundaryRow = boundaryRows.FirstOrDefault(r => r > candidate.RelativeRow && r < nextHoldingHeaderRow, rowCount + 1);
+            var endRelativeRow = Math.Min(nextHoldingHeaderRow, nextBoundaryRow) - 1;
             result.Add(new HeaderDefinition(
                 candidate.RelativeRow,
                 endRelativeRow,
@@ -719,18 +803,38 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         }
     }
 
-    private static string NormalizeHeader(string value)
+    internal static string NormalizeHeader(string value)
         => Regex.Replace(value ?? string.Empty, @"\s+", string.Empty)
             .Replace("／", "/", StringComparison.Ordinal)
             .Trim();
 
-    private static string NormalizeStockCode(string value)
-        => Regex.Replace(value ?? string.Empty, @"\s+", string.Empty).ToUpperInvariant();
+    /// <summary>統一委派給 <see cref="StockCodeNormalizer"/>，Excel 讀取與其他來源共用同一套正規化規則。</summary>
+    private static string NormalizeStockCode(string value) => StockCodeNormalizer.Normalize(value);
 
-    [GeneratedRegex(@"^[0-9A-Z]{4,10}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex StockCodeRegex();
+    /// <summary>
+    /// Excel 讀取階段的第一層股票代碼過濾：取代過去單純「4～10 碼英數字」的過寬規則
+    /// （該規則會把 8 位數金額，例如 10037677，誤判為股票代碼）。
+    /// 接受兩種情形：(1) 符合已知台股商品格式（<see cref="StockIdentityResolver"/>）；
+    /// (2) 1～3 碼純數字，可能是 Excel 把 ETF 代碼（例如 0050）當成數字讀出而遺失前導零，
+    /// 保留候選交由後續 <c>StockIdentityResolutionService</c> 以官方股票主檔確認並補零，
+    /// 不在此處盲目判定，也不得僅靠字串長度判斷。
+    /// </summary>
+    internal static bool IsAcceptableStockCodeCandidate(string normalizedStockCode)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedStockCode))
+        {
+            return false;
+        }
 
-    private sealed record TableHeaderCandidate(
+        if (StockIdentityResolver.Resolve(normalizedStockCode).IsFormatValid)
+        {
+            return true;
+        }
+
+        return normalizedStockCode.Length is >= 1 and <= 3 && normalizedStockCode.All(char.IsAsciiDigit);
+    }
+
+    internal sealed record TableHeaderCandidate(
         int RelativeRow,
         int CodeColumn,
         int NameColumn,
@@ -738,7 +842,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         int? QuantityColumn,
         bool ContainsExitPrice);
 
-    private sealed record HeaderDefinition(
+    internal sealed record HeaderDefinition(
         int RelativeRow,
         int EndRelativeRow,
         int CodeColumn,
@@ -746,7 +850,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         int CurrentPriceColumn,
         int? QuantityColumn);
 
-    private sealed class CellValueAccessor
+    internal sealed class CellValueAccessor
     {
         private readonly object? _rawValue;
         private readonly object[,]? _values;

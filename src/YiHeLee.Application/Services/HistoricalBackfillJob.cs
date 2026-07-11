@@ -21,6 +21,9 @@ public sealed class HistoricalBackfillJob
         OfficialMarketDataSettings settings,
         CancellationToken cancellationToken,
         Action<string>? reportProgress = null,
-        IReadOnlyCollection<string>? emergingStockCodes = null)
-        => _marketPriceService.BackfillHistoryAsync(targetDate, settings, cancellationToken, reportProgress, emergingStockCodes);
+        IReadOnlyCollection<string>? emergingStockCodes = null,
+        IReadOnlyCollection<string>? listedStockCodes = null,
+        IReadOnlyCollection<string>? otcStockCodes = null)
+        => _marketPriceService.BackfillHistoryAsync(
+            targetDate, settings, cancellationToken, reportProgress, emergingStockCodes, listedStockCodes, otcStockCodes);
 }

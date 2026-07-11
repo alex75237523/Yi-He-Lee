@@ -298,7 +298,7 @@ public sealed class StockHistoryImportServiceTests : IDisposable
         public Task<IReadOnlyList<OfficialPriceBatchSummary>> FetchAndSaveDailyPricesAsync(DateOnly targetDate, OfficialMarketDataSettings settings, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public Task<IReadOnlyList<OfficialPriceBatchSummary>> BackfillHistoryAsync(DateOnly targetDate, OfficialMarketDataSettings settings, CancellationToken cancellationToken, Action<string>? reportProgress = null, IReadOnlyCollection<string>? emergingStockCodes = null)
+        public Task<IReadOnlyList<OfficialPriceBatchSummary>> BackfillHistoryAsync(DateOnly targetDate, OfficialMarketDataSettings settings, CancellationToken cancellationToken, Action<string>? reportProgress = null, IReadOnlyCollection<string>? emergingStockCodes = null, IReadOnlyCollection<string>? listedStockCodes = null, IReadOnlyCollection<string>? otcStockCodes = null)
             => throw new NotSupportedException();
 
         public Task<OfficialPriceBatchSummary> FetchAndSaveSingleAsync(OfficialPriceJobType jobType, DateOnly targetDate, MarketType marketType, OfficialMarketDataSettings settings, CancellationToken cancellationToken)

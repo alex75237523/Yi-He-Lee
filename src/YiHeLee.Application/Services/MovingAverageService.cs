@@ -45,15 +45,29 @@ public sealed class MovingAverageService : IMovingAverageService
     /// history 依交易日期由新到舊排序；最新一筆若等於 tradeDate 即當日收盤價，
     /// 否則代表當日尚無官方收盤價資料，整筆視為無法判斷（由呼叫端另行處理，此處仍會回傳交易日數為 0 的結果）。
     /// </summary>
-    internal static MovingAverageResult Calculate(string stockCode, DateOnly tradeDate, IReadOnlyList<(DateOnly TradeDate, decimal ClosePrice)> history)
+    internal static MovingAverageResult Calculate(string stockCode, DateOnly tradeDate, IReadOnlyList<(DateOnly TradeDate, decimal ClosePrice)> rawHistory)
     {
-        if (history.Count == 0 || history[0].TradeDate != tradeDate)
+        // 防禦性去重：同一天同一股票只能有一筆正式收盤價；即使上游意外提供重複交易日，
+        // 也不得讓同一天重複計入平均（正式資料庫已有 UNIQUE 約束，此處為第二層保護）。
+        var history = rawHistory
+            .GroupBy(x => x.TradeDate)
+            .Select(g => g.First())
+            .OrderByDescending(x => x.TradeDate)
+            .ToArray();
+
+        if (history.Length == 0 || history[0].TradeDate != tradeDate)
         {
-            return new MovingAverageResult(stockCode, tradeDate, null, null, null, null, null, 0, CalculationStatus.InsufficientHistory);
+            // 最新一筆官方收盤價日期不等於策略日期，代表當日收盤價尚未取得，
+            // 與「歷史交易日數不足」是不同原因，必須明確區分，不得混為一談或用昨日資料頂替。
+            DateOnly? latest = history.Length > 0 ? history[0].TradeDate : null;
+            var missingReason = history.Length == 0
+                ? "尚無任何官方收盤價資料。"
+                : $"官方收盤價最新日期為 {latest:yyyy-MM-dd}，尚未等於指定策略日期 {tradeDate:yyyy-MM-dd}，依規定不得以昨日資料替代。";
+            return new MovingAverageResult(stockCode, tradeDate, null, null, null, null, null, 0, CalculationStatus.TodayCloseMissing, latest, missingReason);
         }
 
         var closePrice = history[0].ClosePrice;
-        var availableCount = history.Count;
+        var availableCount = history.Length;
 
         decimal? ma5 = ComputeAverage(history, 5);
         decimal? ma20 = ComputeAverage(history, 20);
@@ -64,7 +78,11 @@ public sealed class MovingAverageService : IMovingAverageService
             ? CalculationStatus.InsufficientHistory
             : CalculationStatus.Ok;
 
-        return new MovingAverageResult(stockCode, tradeDate, closePrice, ma5, ma20, ma60, ma120, availableCount, status);
+        var missingReasonText = status == CalculationStatus.InsufficientHistory
+            ? $"僅累積 {availableCount} 個有效交易日，MA120 尚缺 {Math.Max(0, 120 - availableCount)} 個有效交易日（逐檔檢查，非市場整體交易日數）。"
+            : null;
+
+        return new MovingAverageResult(stockCode, tradeDate, closePrice, ma5, ma20, ma60, ma120, availableCount, status, history[0].TradeDate, missingReasonText);
     }
 
     private static decimal? ComputeAverage(IReadOnlyList<(DateOnly TradeDate, decimal ClosePrice)> history, int window)

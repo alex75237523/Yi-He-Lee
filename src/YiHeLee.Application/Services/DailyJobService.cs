@@ -261,15 +261,20 @@ public sealed class DailyJobService
                 _logger.Warning(cnyesReminder);
             }
 
-            CrossValidateWithCnyes(cnyesBatches, movingAverages);
+            var cnyesValidationStatuses = CrossValidateWithCnyes(cnyesBatches, movingAverages);
 
             var calculatedAt = _clock.GetTaipeiNow();
             alerts = _strategyEvaluationService.Evaluate(targetDate, holdings, movingAverages, marketTypes, calculatedAt, resolutions);
 
+            // 「每日五日均價策略」頁籤必須輸出每一筆有效持股的完整計算結果，不能只依賴 alerts
+            // （alerts 只涵蓋觸發、現價異常、無法判斷等需要中央通知的子集合，未觸發的正常持股不在其中）。
+            var holdingResults = _strategyEvaluationService.EvaluateAll(
+                targetDate, holdings, movingAverages, marketTypes, calculatedAt, resolutions, cnyesValidationStatuses);
+
             await _repository.SaveHoldingsAndAlertsAsync(jobId, targetDate, settings.WorkbookPath, holdings, alerts, cancellationToken).ConfigureAwait(false);
 
             _userInteraction.ShowStatus("正在寫入「每日五日均價策略」頁籤……", 95);
-            await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, alerts, cancellationToken).ConfigureAwait(false);
+            await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, holdingResults, cancellationToken).ConfigureAwait(false);
 
             var completedAt = _clock.GetTaipeiNow();
             var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價；比較基準：Excel「現價」欄位（DDE）。";
@@ -381,33 +386,64 @@ public sealed class DailyJobService
     }
 
     /// <summary>
-    /// 官方均線與鉅亨網多頭／空頭排列既有 5／20／60／120 日均價的輕量交叉驗證；僅記錄差異供人工追查，
-    /// 不影響正式判斷，也不寫入額外資料表（差異僅出現在 Log）。
+    /// 官方均線與鉅亨網多頭／空頭排列既有 5／20／60／120 日均價的輕量交叉驗證；僅供人工追查與
+    /// Excel 輸出「鉅亨驗證狀態」欄位參考，不影響正式判斷，也不覆蓋官方資料。
+    /// 回傳每一檔股票（正規化代碼）對應的驗證狀態文字，未出現在鉅亨清單或本次鉅亨網無資料時
+    /// 也會有明確狀態，不得讓 Excel 輸出留白。
     /// </summary>
-    private void CrossValidateWithCnyes(IReadOnlyList<CrawlBatch> cnyesBatches, IReadOnlyList<MovingAverageResult> officialResults)
+    private Dictionary<string, string> CrossValidateWithCnyes(IReadOnlyList<CrawlBatch> cnyesBatches, IReadOnlyList<MovingAverageResult> officialResults)
     {
+        var statuses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var officialByCode = officialResults
-            .Where(x => x.MovingAverage20 is not null)
             .GroupBy(x => StrategyEvaluationService.NormalizeStockCode(x.StockCode), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
-        foreach (var item in cnyesBatches.SelectMany(batch => batch.Items))
+        if (cnyesBatches.Count == 0)
         {
-            var code = StrategyEvaluationService.NormalizeStockCode(item.StockCode);
-            if (!officialByCode.TryGetValue(code, out var official) || official.MovingAverage20 is not decimal officialMa20)
+            // 鉅亨網本次未成功更新（best-effort 失敗），不影響官方資料，僅標示無法比對。
+            foreach (var code in officialByCode.Keys)
             {
+                statuses[code] = "鉅亨網本次無資料";
+            }
+
+            return statuses;
+        }
+
+        var cnyesByCode = cnyesBatches
+            .SelectMany(batch => batch.Items)
+            .GroupBy(x => StrategyEvaluationService.NormalizeStockCode(x.StockCode), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (code, official) in officialByCode)
+        {
+            if (!cnyesByCode.TryGetValue(code, out var cnyesItem))
+            {
+                statuses[code] = "不適用（未出現在鉅亨清單）";
                 continue;
             }
 
-            var diff = Math.Abs(officialMa20 - item.MovingAverage20);
-            var tolerance = Math.Max(0.5m, item.MovingAverage20 * 0.02m);
+            if (official.MovingAverage20 is not decimal officialMa20)
+            {
+                statuses[code] = "資料不足，暫不比對";
+                continue;
+            }
+
+            var diff = Math.Abs(officialMa20 - cnyesItem.MovingAverage20);
+            var tolerance = Math.Max(0.5m, cnyesItem.MovingAverage20 * 0.02m);
             if (diff > tolerance)
             {
+                statuses[code] = $"差異 {diff:0.00}";
                 _logger.Warning(
-                    $"交叉驗證差異：股票 {item.StockCode} 官方 20 日均價={officialMa20:0.00}，鉅亨網 20 日均價={item.MovingAverage20:0.00}，" +
+                    $"交叉驗證差異：股票 {cnyesItem.StockCode} 官方 20 日均價={officialMa20:0.00}，鉅亨網 20 日均價={cnyesItem.MovingAverage20:0.00}，" +
                     $"差異 {diff:0.00} 已超出容忍範圍，僅記錄不影響正式判斷。");
             }
+            else
+            {
+                statuses[code] = "相符";
+            }
         }
+
+        return statuses;
     }
 
     private async Task<IReadOnlyList<CrawlBatch>> CrawlAllRequiredBatchesAsync(

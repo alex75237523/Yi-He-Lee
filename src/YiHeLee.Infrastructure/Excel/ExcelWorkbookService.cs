@@ -11,10 +11,12 @@ namespace YiHeLee.Infrastructure.Excel;
 
 public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 {
-    // 代碼／名稱／市場別／收盤價／5日均價／20日均價／60日均價／120日均價／有效交易日數／
-    // 最新收盤日期／計算狀態／缺少原因／來源頁籤／原始列號，共 14 欄（A～N）。
-    private const int OutputColumnCount = 14;
-    private const string OutputRangeLastColumn = "N";
+    // 客戶／來源頁籤／原始列號／代碼／名稱／市場別／現價／DDE狀態／DDE錯誤原因／收盤價／
+    // 5日均價／20日均價／60日均價／120日均價／有效交易日數／最新收盤日期／均線計算狀態／
+    // 缺少原因／MA5比較／MA20比較／MA120比較／整體結果／觸發條件／鉅亨驗證狀態／計算時間，共 25 欄（A～Y）。
+    // 每一筆有效持股都輸出一列，不論是否觸發、DDE 現價是否有效、均線是否部分缺項，皆不得省略。
+    private const int OutputColumnCount = 25;
+    private const string OutputRangeLastColumn = "Y";
     private readonly string _backupDirectory;
     private readonly IAppLogger _logger;
     private readonly HoldingRowExclusionService _holdingRowExclusionService;
@@ -44,13 +46,13 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
     public Task WriteStrategyResultsAsync(
         AppSettings settings,
         DateOnly targetDate,
-        IReadOnlyList<StrategyAlert> alerts,
+        IReadOnlyList<HoldingStrategyResult> results,
         CancellationToken cancellationToken)
         => ExecuteWithExcelRetryAsync(
             settings,
             () =>
             {
-                WriteStrategyResultsCore(settings, targetDate, alerts);
+                WriteStrategyResultsCore(settings, targetDate, results);
                 return true;
             },
             "寫入 Excel 策略結果",
@@ -238,7 +240,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         }
     }
 
-    private void WriteStrategyResultsCore(AppSettings settings, DateOnly targetDate, IReadOnlyList<StrategyAlert> alerts)
+    private void WriteStrategyResultsCore(AppSettings settings, DateOnly targetDate, IReadOnlyList<HoldingStrategyResult> results)
     {
         ExcelInterop.Workbook? workbook = null;
         ExcelInterop.Application? application = null;
@@ -267,15 +269,18 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                     $"頁籤「{settings.OutputWorksheetName}」目前受保護，請先解除保護後再執行。");
             }
 
-            var ordered = alerts
-                .OrderBy(x => x.AlertKind switch
+            // 每一筆有效持股都輸出一列：先依整體結果排序（觸發優先，其次現價異常／無法判斷，最後未觸發），
+            // 同一分類內再依客戶與股票代碼排序，方便使用者閱讀，但不得因排序而遺漏任何一筆。
+            var ordered = results
+                .OrderBy(x => x.OverallResult switch
                 {
-                    AlertKind.MovingAverageTriggered => 0,
-                    AlertKind.CurrentPriceInvalid => 1,
+                    "觸發" => 0,
+                    "現價無效，暫時無法判斷" => 1,
+                    "未觸發" => 3,
                     _ => 2
                 })
                 .ThenBy(x => x.CustomerName, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(x => x.StockCode, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.ResolvedStockCode, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
             var lastClearRow = Math.Max(10_000, ordered.Length + 20);
@@ -287,12 +292,14 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             clearRange.Clear();
 
             var rowCount = Math.Max(2, ordered.Length + 1);
-            var matrix = new object[rowCount, OutputColumnCount];
+            var matrix = new object?[rowCount, OutputColumnCount];
 
             var headers = new[]
             {
-                "代碼", "名稱", "市場別", "收盤價", "5日均價", "20日均價", "60日均價", "120日均價",
-                "有效交易日數", "最新收盤日期", "計算狀態", "缺少原因", "來源頁籤", "原始列號"
+                "客戶", "來源頁籤", "原始列號", "代碼", "名稱", "市場別", "現價", "DDE狀態", "DDE錯誤原因",
+                "收盤價", "5日均價", "20日均價", "60日均價", "120日均價", "有效交易日數", "最新收盤日期",
+                "均線計算狀態", "缺少原因", "MA5比較", "MA20比較", "MA120比較", "整體結果", "觸發條件",
+                "鉅亨驗證狀態", "計算時間"
             };
             for (var column = 0; column < headers.Length; column++)
             {
@@ -301,22 +308,33 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 
             for (var index = 0; index < ordered.Length; index++)
             {
-                var alert = ordered[index];
+                var item = ordered[index];
                 var row = index + 1;
-                matrix[row, 0] = alert.StockCode;
-                matrix[row, 1] = alert.StockName;
-                matrix[row, 2] = DescribeMarketType(alert.MarketType);
-                matrix[row, 3] = alert.ClosePrice;
-                matrix[row, 4] = alert.MovingAverage5;
-                matrix[row, 5] = alert.MovingAverage20;
-                matrix[row, 6] = alert.MovingAverage60;
-                matrix[row, 7] = alert.MovingAverage120;
-                matrix[row, 8] = alert.AvailableTradingDayCount;
-                matrix[row, 9] = alert.LatestAvailableTradeDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
-                matrix[row, 10] = alert.DiagnosticStatus ?? DescribeDefaultDiagnosticStatus(alert.AlertKind);
-                matrix[row, 11] = alert.MissingReason ?? string.Empty;
-                matrix[row, 12] = alert.SheetName;
-                matrix[row, 13] = alert.ExcelRow;
+                matrix[row, 0] = item.CustomerName;
+                matrix[row, 1] = item.SheetName;
+                matrix[row, 2] = item.ExcelRow;
+                matrix[row, 3] = item.ResolvedStockCode;
+                matrix[row, 4] = item.StockName;
+                matrix[row, 5] = DescribeMarketType(item.MarketType);
+                matrix[row, 6] = item.CurrentPrice;
+                matrix[row, 7] = item.CurrentPriceStatus;
+                matrix[row, 8] = item.CurrentPriceIssue ?? string.Empty;
+                matrix[row, 9] = item.ClosePrice;
+                matrix[row, 10] = item.MovingAverage5;
+                matrix[row, 11] = item.MovingAverage20;
+                matrix[row, 12] = item.MovingAverage60;
+                matrix[row, 13] = item.MovingAverage120;
+                matrix[row, 14] = item.AvailableTradingDayCount;
+                matrix[row, 15] = item.LatestAvailableTradeDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
+                matrix[row, 16] = item.CalculationStatus;
+                matrix[row, 17] = item.MissingReason ?? string.Empty;
+                matrix[row, 18] = DescribeMatch(item.MovingAverage5, item.Ma5Match);
+                matrix[row, 19] = DescribeMatch(item.MovingAverage20, item.Ma20Match);
+                matrix[row, 20] = DescribeMatch(item.MovingAverage120, item.Ma120Match);
+                matrix[row, 21] = item.OverallResult;
+                matrix[row, 22] = item.TriggerDescription;
+                matrix[row, 23] = item.CnyesValidationStatus;
+                matrix[row, 24] = item.CalculatedAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
             }
 
             dataRange = worksheet.Range[$"A1:{OutputRangeLastColumn}{rowCount}"];
@@ -344,12 +362,15 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         }
     }
 
-    private static void FormatOutputColumns(ExcelInterop.Worksheet worksheet, int rowCount, IReadOnlyList<StrategyAlert> alerts)
+    private static string DescribeMatch(decimal? movingAverage, bool isMatch)
+        => movingAverage is null ? "無資料" : (isMatch ? "符合" : "不符合");
+
+    private static void FormatOutputColumns(ExcelInterop.Worksheet worksheet, int rowCount, IReadOnlyList<HoldingStrategyResult> results)
     {
         ExcelInterop.Range? allRange = null;
         ExcelInterop.Range? codeColumn = null;
         ExcelInterop.Range? numericRange = null;
-        ExcelInterop.Range? missingRange = null;
+        ExcelInterop.Range? dayCountColumn = null;
         try
         {
             allRange = worksheet.Range[$"A1:{OutputRangeLastColumn}{rowCount}"];
@@ -357,41 +378,76 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             allRange.VerticalAlignment = ExcelInterop.XlVAlign.xlVAlignCenter;
             allRange.WrapText = true;
 
-            // 代碼欄位固定文字格式，保留前導零（例如 0050）；均線相關欄位（收盤價～120日均價）為數字格式；
-            // 有效交易日數為整數；其餘診斷欄位（最新收盤日期、計算狀態、缺少原因、來源頁籤）為文字。
-            codeColumn = worksheet.Range[$"A2:A{rowCount}"];
+            // 代碼欄位固定文字格式，保留前導零（例如 0050）；現價與均線相關欄位為數字格式；
+            // 有效交易日數為整數；其餘診斷欄位為文字。
+            codeColumn = worksheet.Range[$"D2:D{rowCount}"];
             codeColumn.NumberFormat = "@";
-            numericRange = worksheet.Range[$"D2:H{rowCount}"];
+            numericRange = worksheet.Range[$"G2:G{rowCount},J2:N{rowCount}"];
             numericRange.NumberFormat = "0.00";
+            dayCountColumn = worksheet.Range[$"O2:O{rowCount}"];
+            dayCountColumn.NumberFormat = "0";
 
-            SetColumnWidth(worksheet, "A", 12);
-            SetColumnWidth(worksheet, "B", 18);
+            SetColumnWidth(worksheet, "A", 14);
+            SetColumnWidth(worksheet, "B", 16);
             SetColumnWidth(worksheet, "C", 10);
-            SetColumnWidth(worksheet, "D", 11);
-            SetColumnWidth(worksheet, "E", 11);
-            SetColumnWidth(worksheet, "F", 11);
-            SetColumnWidth(worksheet, "G", 11);
-            SetColumnWidth(worksheet, "H", 12);
-            SetColumnWidth(worksheet, "I", 13);
-            SetColumnWidth(worksheet, "J", 13);
-            SetColumnWidth(worksheet, "K", 14);
-            SetColumnWidth(worksheet, "L", 40);
-            SetColumnWidth(worksheet, "M", 16);
+            SetColumnWidth(worksheet, "D", 10);
+            SetColumnWidth(worksheet, "E", 16);
+            SetColumnWidth(worksheet, "F", 8);
+            SetColumnWidth(worksheet, "G", 10);
+            SetColumnWidth(worksheet, "H", 9);
+            SetColumnWidth(worksheet, "I", 30);
+            SetColumnWidth(worksheet, "J", 10);
+            SetColumnWidth(worksheet, "K", 10);
+            SetColumnWidth(worksheet, "L", 10);
+            SetColumnWidth(worksheet, "M", 10);
             SetColumnWidth(worksheet, "N", 10);
+            SetColumnWidth(worksheet, "O", 12);
+            SetColumnWidth(worksheet, "P", 12);
+            SetColumnWidth(worksheet, "Q", 13);
+            SetColumnWidth(worksheet, "R", 34);
+            SetColumnWidth(worksheet, "S", 9);
+            SetColumnWidth(worksheet, "T", 9);
+            SetColumnWidth(worksheet, "U", 9);
+            SetColumnWidth(worksheet, "V", 12);
+            SetColumnWidth(worksheet, "W", 30);
+            SetColumnWidth(worksheet, "X", 20);
+            SetColumnWidth(worksheet, "Y", 18);
 
-            // 現價異常與無技術資料的列一律以底色標示，提醒使用者這些持股本次未完成判斷。
-            var firstMissingIndex = alerts.ToList().FindIndex(x => x.AlertKind != AlertKind.MovingAverageTriggered);
-            if (firstMissingIndex >= 0)
+            // 逐列上色：DDE 無效／歷史資料不足＝淡黃色；官方當日收盤價缺少＝淡紅色；觸發＝淡綠色；
+            // 正常未觸發不上色，但仍完整輸出該列，不得因未觸發而略過。同一列若同時符合多個條件，
+            // 依「官方收盤價缺少」>「DDE 無效／歷史資料不足」>「觸發」的優先順序上色。
+            for (var index = 0; index < results.Count; index++)
             {
-                var startRow = firstMissingIndex + 2;
-                var endRow = alerts.Count + 1;
-                missingRange = worksheet.Range[$"A{startRow}:{OutputRangeLastColumn}{endRow}"];
-                missingRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.LightYellow);
+                var item = results[index];
+                var row = index + 2;
+                System.Drawing.Color? color = item.CalculationStatus == "當日收盤價缺失"
+                    ? System.Drawing.Color.MistyRose
+                    : (item.CurrentPriceStatus == "無效" || item.CalculationStatus is "歷史資料不足" or "歷史回補失敗")
+                        ? System.Drawing.Color.LightYellow
+                        : item.OverallResult == "觸發"
+                            ? System.Drawing.Color.LightGreen
+                            : null;
+
+                if (color is null)
+                {
+                    continue;
+                }
+
+                ExcelInterop.Range? rowRange = null;
+                try
+                {
+                    rowRange = worksheet.Range[$"A{row}:{OutputRangeLastColumn}{row}"];
+                    rowRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(color.Value);
+                }
+                finally
+                {
+                    ComObject.FinalRelease(rowRange);
+                }
             }
         }
         finally
         {
-            ComObject.FinalRelease(missingRange);
+            ComObject.FinalRelease(dayCountColumn);
             ComObject.FinalRelease(numericRange);
             ComObject.FinalRelease(codeColumn);
             ComObject.FinalRelease(allRange);
@@ -404,14 +460,6 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         MarketType.Otc => "上櫃",
         MarketType.Emerging => "興櫃",
         _ => "未知"
-    };
-
-    /// <summary>舊資料或未帶入 DiagnosticStatus 時的保底文字，正常流程應一律由 StrategyEvaluationService 帶入。</summary>
-    private static string DescribeDefaultDiagnosticStatus(AlertKind alertKind) => alertKind switch
-    {
-        AlertKind.MovingAverageTriggered => "正常",
-        AlertKind.CurrentPriceInvalid => "Excel現價異常",
-        _ => "歷史資料不足"
     };
 
     private static void SetColumnWidth(ExcelInterop.Worksheet worksheet, string column, double width)

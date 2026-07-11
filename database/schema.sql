@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS CustomerHoldingSnapshots (
     StockCode TEXT NOT NULL,                        -- 股票代碼
     StockName TEXT NOT NULL,                        -- 股票名稱
     CurrentPrice NUMERIC NULL,                      -- Excel「現價」欄位（外部 DDE）；無法判讀時為 NULL
+    CurrentPriceIssue TEXT NULL,                    -- 現價無效原因（例如 #N/A、空白、0、負數、無法解析文字）
     Quantity NUMERIC NULL,                          -- 張數
     HoldingKey TEXT NOT NULL,                       -- 持股唯一識別
     CreatedAt TEXT NOT NULL,                        -- 建立時間

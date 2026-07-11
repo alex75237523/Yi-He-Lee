@@ -155,6 +155,44 @@ public sealed record MovingAverageResult(
     public int MissingTradingDaysForMa120 => Math.Max(0, 120 - AvailableTradingDayCount);
 }
 
+/// <summary>
+/// 單一有效持股的完整計算結果，供 Excel「每日五日均價策略」頁籤輸出使用。
+/// 與 <see cref="StrategyAlert"/> 不同：<b>每一筆有效持股都必須有一筆</b>，不論是否觸發、
+/// 是否有效交易日數不足、DDE 現價是否無效，都不得因此略過或漏產生。DDE 現價異常只能讓
+/// <see cref="OverallResult"/> 顯示為「現價無效，暫時無法判斷」，不得影響
+/// <see cref="ClosePrice"/>／<see cref="MovingAverage5"/>／<see cref="MovingAverage20"/>／
+/// <see cref="MovingAverage60"/>／<see cref="MovingAverage120"/> 等已由官方收盤價算出的欄位。
+/// <see cref="StrategyAlert"/> 只負責中央通知與需要提醒使用者的子集合，Excel 完整結果一律以本型別為準。
+/// </summary>
+public sealed record HoldingStrategyResult(
+    DateOnly TradeDate,
+    string CustomerName,
+    string SheetName,
+    int ExcelRow,
+    string RawStockCode,
+    string ResolvedStockCode,
+    string StockName,
+    MarketType? MarketType,
+    decimal? CurrentPrice,
+    string CurrentPriceStatus,
+    string? CurrentPriceIssue,
+    decimal? ClosePrice,
+    decimal? MovingAverage5,
+    decimal? MovingAverage20,
+    decimal? MovingAverage60,
+    decimal? MovingAverage120,
+    int AvailableTradingDayCount,
+    DateOnly? LatestAvailableTradeDate,
+    string CalculationStatus,
+    string? MissingReason,
+    string CnyesValidationStatus,
+    bool Ma5Match,
+    bool Ma20Match,
+    bool Ma120Match,
+    string OverallResult,
+    string TriggerDescription,
+    DateTimeOffset CalculatedAt);
+
 /// <summary>官方價格批次（每日排程或歷史回補）執行紀錄。</summary>
 public sealed record OfficialPriceBatchSummary(
     string BatchId,

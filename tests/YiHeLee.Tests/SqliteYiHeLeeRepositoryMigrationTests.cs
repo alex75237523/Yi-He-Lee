@@ -68,6 +68,107 @@ public sealed class SqliteYiHeLeeRepositoryMigrationTests : IDisposable
         Assert.Equal(1, Convert.ToInt32(await ScalarAsync(connection, "SELECT COUNT(*) FROM CustomerHoldingSnapshots WHERE CurrentPrice IS NULL;")));
     }
 
+    [Fact]
+    public async Task 舊資料庫缺少CurrentPriceIssue欄位時自動安全補上且保留既有資料列()
+    {
+        CreateSchemaWithCurrentPriceButNoIssueColumn();
+
+        var repository = new SqliteYiHeLeeRepository(_databasePath, new FixedClock());
+        await repository.InitializeAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await connection.OpenAsync();
+
+        Assert.True(await ColumnExistsAsync(connection, "CustomerHoldingSnapshots", "CurrentPriceIssue"));
+        // 既有資料列（遷移前已存在）必須保留，不得因新增欄位而遺失。
+        Assert.Equal(1, Convert.ToInt32(await ScalarAsync(connection, "SELECT COUNT(*) FROM CustomerHoldingSnapshots WHERE StockCode = '5285';")));
+
+        // 遷移後可正常寫入並讀回 DDE 錯誤原因。
+        var jobId = await repository.BeginJobAsync(TradeDate, 1, Now(), CancellationToken.None);
+        var holding = new CustomerHolding(
+            TradeDate, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 5, "5351", "鈺創",
+            null, 8, @"C:\DATA\親帶績效.XLSX|王保仁-A|5|5351", "#N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）");
+        await repository.SaveHoldingsAndAlertsAsync(jobId, TradeDate, @"C:\Data\親帶績效.xlsx", [holding], [], CancellationToken.None);
+
+        var savedIssue = await ScalarAsync(connection, "SELECT CurrentPriceIssue FROM CustomerHoldingSnapshots WHERE StockCode = '5351';");
+        Assert.Equal("#N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）", savedIssue);
+    }
+
+    /// <summary>建立已完成 EntryAveragePrice→CurrentPrice 遷移、但尚無 CurrentPriceIssue 欄位的資料庫並塞一筆資料。</summary>
+    private void CreateSchemaWithCurrentPriceButNoIssueColumn()
+    {
+        using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE JobRuns (
+                JobId TEXT NOT NULL PRIMARY KEY,
+                TargetDate TEXT NOT NULL,
+                TaipeiStartedAt TEXT NOT NULL,
+                TaipeiCompletedAt TEXT NULL,
+                AttemptNumber INTEGER NOT NULL,
+                Status INTEGER NOT NULL,
+                Outcome INTEGER NULL,
+                Message TEXT NULL,
+                CrawledCount INTEGER NOT NULL DEFAULT 0,
+                HoldingCount INTEGER NOT NULL DEFAULT 0,
+                AlertCount INTEGER NOT NULL DEFAULT 0,
+                MissingIndicatorCount INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE CustomerHoldingSnapshots (
+                Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                JobId TEXT NOT NULL,
+                SnapshotDate TEXT NOT NULL,
+                WorkbookPath TEXT NOT NULL,
+                SheetName TEXT NOT NULL,
+                CustomerName TEXT NOT NULL,
+                ExcelRow INTEGER NOT NULL,
+                StockCode TEXT NOT NULL,
+                StockName TEXT NOT NULL,
+                CurrentPrice NUMERIC NULL,
+                Quantity NUMERIC NULL,
+                HoldingKey TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                CONSTRAINT UQ_CustomerHoldingSnapshots UNIQUE (SnapshotDate, HoldingKey)
+            );
+            CREATE TABLE StrategyAlerts (
+                Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                JobId TEXT NOT NULL,
+                TradeDate TEXT NOT NULL,
+                AlertKind INTEGER NOT NULL,
+                WorkbookPath TEXT NOT NULL,
+                SheetName TEXT NOT NULL,
+                CustomerName TEXT NOT NULL,
+                ExcelRow INTEGER NOT NULL,
+                StockCode TEXT NOT NULL,
+                StockName TEXT NOT NULL,
+                CurrentPrice NUMERIC NULL,
+                Quantity NUMERIC NULL,
+                ClosePrice NUMERIC NULL,
+                MovingAverage5 NUMERIC NULL,
+                MovingAverage20 NUMERIC NULL,
+                MovingAverage60 NUMERIC NULL,
+                MovingAverage120 NUMERIC NULL,
+                TriggeredMa5 INTEGER NOT NULL,
+                TriggeredMa20 INTEGER NOT NULL,
+                TriggeredMa120 INTEGER NOT NULL,
+                TriggerDescription TEXT NOT NULL,
+                MarketType INTEGER NULL,
+                IndicatorType INTEGER NULL,
+                SourceUrl TEXT NULL,
+                CreatedAt TEXT NOT NULL,
+                UpdatedAt TEXT NOT NULL,
+                CONSTRAINT UQ_StrategyAlerts UNIQUE (TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode)
+            );
+            INSERT INTO JobRuns (JobId, TargetDate, TaipeiStartedAt, AttemptNumber, Status)
+            VALUES ('legacy-job-2', '2026-07-10', '2026-07-10T13:35:00+08:00', 1, 2);
+            INSERT INTO CustomerHoldingSnapshots
+                (JobId, SnapshotDate, WorkbookPath, SheetName, CustomerName, ExcelRow, StockCode, StockName, CurrentPrice, Quantity, HoldingKey, CreatedAt)
+            VALUES ('legacy-job-2', '2026-07-10', 'C:\Data\legacy.xlsx', '客戶A', '客戶A', 4, '5285', '宜鼎', 123.5, 8, 'KEY-2', '2026-07-10T13:35:00+08:00');
+            """;
+        command.ExecuteNonQuery();
+    }
+
     /// <summary>建立 2026-07-11 之前的舊結構（EntryAveragePrice NOT NULL）並各塞一筆資料。</summary>
     private void CreateLegacySchemaWithOneRowEach()
     {

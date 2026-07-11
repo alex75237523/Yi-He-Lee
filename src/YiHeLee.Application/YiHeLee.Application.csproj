@@ -5,4 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="..\YiHeLee.Domain\YiHeLee.Domain.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="YiHeLee.Tests" />
+  </ItemGroup>
 </Project>

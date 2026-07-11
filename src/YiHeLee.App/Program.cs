@@ -59,6 +59,7 @@ internal static class Program
         var stockPriceValidationService = new CnyesStockPriceValidationService(movingAverageService, stockPriceValidationRepository, clock, logger);
 
         var strategyService = new StrategyEvaluationService();
+        var stockIdentityResolutionService = new StockIdentityResolutionService(marketDataRepository);
         var dailyJobService = new DailyJobService(
             clock,
             settingsStore,
@@ -73,7 +74,8 @@ internal static class Program
             marketPriceService,
             movingAverageService,
             strategyService,
-            validationService);
+            validationService,
+            stockIdentityResolutionService);
         var scheduleCoordinator = new DailyScheduleCoordinator(
             dailyJobService,
             clock,

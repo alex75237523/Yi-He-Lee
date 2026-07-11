@@ -88,7 +88,133 @@ public sealed class MovingAverageServiceTests
         Assert.Equal(0, result.AvailableTradingDayCount);
         Assert.Null(result.ClosePrice);
         Assert.Null(result.MovingAverage5);
+        // 當日收盤價尚未取得與「歷史交易日數不足」是不同原因，必須明確區分（見 docs/01_需求與規則.md）。
+        Assert.Equal(CalculationStatus.TodayCloseMissing, result.CalculationStatus);
+        Assert.NotNull(result.MissingReason);
+    }
+
+    [Fact]
+    public async Task 只有4筆資料時四種均線全部為null()
+    {
+        var history = BuildHistory(days: 4);
+        var repository = new FakeMarketDataRepository(history);
+        var service = new MovingAverageService(repository);
+
+        var result = await service.CalculateAsync("5285", TradeDate, CancellationToken.None);
+
+        Assert.Equal(4, result.AvailableTradingDayCount);
+        Assert.NotNull(result.ClosePrice);
+        Assert.Null(result.MovingAverage5);
+        Assert.Null(result.MovingAverage20);
+        Assert.Null(result.MovingAverage60);
+        Assert.Null(result.MovingAverage120);
         Assert.Equal(CalculationStatus.InsufficientHistory, result.CalculationStatus);
+    }
+
+    [Fact]
+    public async Task 只有5筆資料時只有MA5有值()
+    {
+        var history = BuildHistory(days: 5);
+        var repository = new FakeMarketDataRepository(history);
+        var service = new MovingAverageService(repository);
+
+        var result = await service.CalculateAsync("5285", TradeDate, CancellationToken.None);
+
+        Assert.NotNull(result.MovingAverage5);
+        Assert.Null(result.MovingAverage20);
+        Assert.Null(result.MovingAverage60);
+        Assert.Null(result.MovingAverage120);
+    }
+
+    [Fact]
+    public async Task 只有19筆資料時只有MA5有值()
+    {
+        var history = BuildHistory(days: 19);
+        var repository = new FakeMarketDataRepository(history);
+        var service = new MovingAverageService(repository);
+
+        var result = await service.CalculateAsync("5285", TradeDate, CancellationToken.None);
+
+        Assert.NotNull(result.MovingAverage5);
+        Assert.Null(result.MovingAverage20);
+        Assert.Null(result.MovingAverage60);
+        Assert.Null(result.MovingAverage120);
+    }
+
+    [Fact]
+    public async Task 只有20筆資料時MA5與MA20有值()
+    {
+        var history = BuildHistory(days: 20);
+        var repository = new FakeMarketDataRepository(history);
+        var service = new MovingAverageService(repository);
+
+        var result = await service.CalculateAsync("5285", TradeDate, CancellationToken.None);
+
+        Assert.NotNull(result.MovingAverage5);
+        Assert.NotNull(result.MovingAverage20);
+        Assert.Null(result.MovingAverage60);
+        Assert.Null(result.MovingAverage120);
+    }
+
+    [Fact]
+    public async Task 只有59筆資料時MA5與MA20有值MA60為null()
+    {
+        var history = BuildHistory(days: 59);
+        var repository = new FakeMarketDataRepository(history);
+        var service = new MovingAverageService(repository);
+
+        var result = await service.CalculateAsync("5285", TradeDate, CancellationToken.None);
+
+        Assert.NotNull(result.MovingAverage5);
+        Assert.NotNull(result.MovingAverage20);
+        Assert.Null(result.MovingAverage60);
+        Assert.Null(result.MovingAverage120);
+    }
+
+    [Fact]
+    public async Task 只有60筆資料時MA5MA20MA60皆有值()
+    {
+        var history = BuildHistory(days: 60);
+        var repository = new FakeMarketDataRepository(history);
+        var service = new MovingAverageService(repository);
+
+        var result = await service.CalculateAsync("5285", TradeDate, CancellationToken.None);
+
+        Assert.NotNull(result.MovingAverage5);
+        Assert.NotNull(result.MovingAverage20);
+        Assert.NotNull(result.MovingAverage60);
+        Assert.Null(result.MovingAverage120);
+    }
+
+    [Fact]
+    public async Task 剛好120筆資料時四種均線都有值()
+    {
+        var history = BuildHistory(days: 120);
+        var repository = new FakeMarketDataRepository(history);
+        var service = new MovingAverageService(repository);
+
+        var result = await service.CalculateAsync("5285", TradeDate, CancellationToken.None);
+
+        Assert.NotNull(result.MovingAverage5);
+        Assert.NotNull(result.MovingAverage20);
+        Assert.NotNull(result.MovingAverage60);
+        Assert.NotNull(result.MovingAverage120);
+        Assert.Equal(CalculationStatus.Ok, result.CalculationStatus);
+    }
+
+    [Fact]
+    public void 重複交易日不得重複計入平均()
+    {
+        // 上游若意外提供同一天重複兩筆（正式資料庫已有 UNIQUE 約束，此處驗證第二層防禦），
+        // 平均值計算結果必須與去重後一致，不得因重複列而稀釋或誤算。
+        var distinctHistory = BuildHistory(days: 5);
+        var withDuplicate = new List<(DateOnly TradeDate, decimal ClosePrice)>(distinctHistory) { distinctHistory[0] };
+
+        var resultWithDuplicate = MovingAverageService.Calculate("5285", TradeDate, withDuplicate);
+        var resultDistinct = MovingAverageService.Calculate("5285", TradeDate, distinctHistory);
+
+        Assert.Equal(resultDistinct.MovingAverage5, resultWithDuplicate.MovingAverage5);
+        Assert.Equal(resultDistinct.AvailableTradingDayCount, resultWithDuplicate.AvailableTradingDayCount);
     }
 
     private static (DateOnly TradeDate, decimal ClosePrice)[] BuildHistory(int days)

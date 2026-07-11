@@ -174,8 +174,10 @@ CREATE TABLE IF NOT EXISTS StockMovingAverage (
     Ma20 NUMERIC NULL,                               -- 20日均線
     Ma60 NUMERIC NULL,                                -- 60日均線
     Ma120 NUMERIC NULL,                               -- 120日均線
-    AvailableTradingDayCount INTEGER NOT NULL,        -- 實際可用有效交易日數
-    CalculationStatus INTEGER NOT NULL,               -- 1正常／2交易日數不足
+    AvailableTradingDayCount INTEGER NOT NULL,        -- 實際可用有效交易日數（逐檔計算，非市場整體）
+    CalculationStatus INTEGER NOT NULL,               -- 1正常／2交易日數不足／3當日收盤價缺失／4歷史回補失敗
+    LatestAvailableTradeDate TEXT NULL,               -- 最新一筆已知有效收盤價日期
+    MissingReason TEXT NULL,                          -- 均線資料不足／回補失敗等缺少原因說明
     CreatedAt TEXT NOT NULL,
     UpdatedAt TEXT NOT NULL,
     FOREIGN KEY (StockId) REFERENCES StockMaster(Id),

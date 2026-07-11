@@ -68,16 +68,16 @@ public sealed class MarketPriceService : IMarketPriceService
         OfficialMarketDataSettings settings,
         CancellationToken cancellationToken,
         Action<string>? reportProgress = null,
-        IReadOnlyCollection<string>? emergingStockCodes = null)
+        IReadOnlyCollection<string>? emergingStockCodes = null,
+        IReadOnlyCollection<string>? listedStockCodes = null,
+        IReadOnlyCollection<string>? otcStockCodes = null)
     {
         var summaries = new List<OfficialPriceBatchSummary>();
         var requiredTradingDays = Math.Max(1, settings.RequiredTradingDaysForMa120);
         var maxLookbackCalendarDays = Math.Max(requiredTradingDays, settings.MaxBackfillLookbackCalendarDays);
-        var emergingCodes = (emergingStockCodes ?? [])
-            .Select(StrategyEvaluationService.NormalizeStockCode)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var emergingCodes = NormalizeCodes(emergingStockCodes);
+        var listedCodes = NormalizeCodes(listedStockCodes);
+        var otcCodes = NormalizeCodes(otcStockCodes);
 
         // 歷史回補只補建 targetDate「以前」的資料；targetDate 當日一律由每日正式排程負責，兩者不得混用。
         // 判斷「是否已足夠」一律以固定基準日（targetDate 前一日）為準，不可隨 cursor 逐日倒退而跟著縮小查詢範圍。
@@ -90,13 +90,21 @@ public sealed class MarketPriceService : IMarketPriceService
 
             var listedTradingDays = await _repository.GetDistinctTradeDateCountAsync(referenceDate, requiredTradingDays, MarketType.Listed, cancellationToken).ConfigureAwait(false);
             var otcTradingDays = await _repository.GetDistinctTradeDateCountAsync(referenceDate, requiredTradingDays, MarketType.Otc, cancellationToken).ConfigureAwait(false);
-            var emergingTradingDayCounts = await GetEmergingTradingDayCountsAsync(emergingCodes, referenceDate, requiredTradingDays, cancellationToken).ConfigureAwait(false);
-            var insufficientEmergingCodes = emergingTradingDayCounts
-                .Where(x => x.Value < requiredTradingDays)
-                .Select(x => x.Key)
-                .ToArray();
 
-            if (listedTradingDays >= requiredTradingDays && otcTradingDays >= requiredTradingDays && insufficientEmergingCodes.Length == 0)
+            // 完成判斷不得只看「市場整體」交易日數：即使整體市場已累積足夠天數，仍必須逐檔確認
+            // 傳入的持股個別是否也達標（例如上櫃整體已有 120 日，但個股鈺創／群聯／碩禾只有 83／76／65 筆）。
+            var listedStockCounts = await GetStockTradingDayCountsAsync(listedCodes, referenceDate, requiredTradingDays, cancellationToken).ConfigureAwait(false);
+            var otcStockCounts = await GetStockTradingDayCountsAsync(otcCodes, referenceDate, requiredTradingDays, cancellationToken).ConfigureAwait(false);
+            var emergingTradingDayCounts = await GetStockTradingDayCountsAsync(emergingCodes, referenceDate, requiredTradingDays, cancellationToken).ConfigureAwait(false);
+
+            var listedInsufficientStocks = listedCodes.Where(code => listedStockCounts[code] < requiredTradingDays).ToArray();
+            var otcInsufficientStocks = otcCodes.Where(code => otcStockCounts[code] < requiredTradingDays).ToArray();
+            var insufficientEmergingCodes = emergingCodes.Where(code => emergingTradingDayCounts[code] < requiredTradingDays).ToArray();
+
+            var listedSufficient = listedTradingDays >= requiredTradingDays && listedInsufficientStocks.Length == 0;
+            var otcSufficient = otcTradingDays >= requiredTradingDays && otcInsufficientStocks.Length == 0;
+
+            if (listedSufficient && otcSufficient && insufficientEmergingCodes.Length == 0)
             {
                 var emergingText = emergingCodes.Length == 0
                     ? "無興櫃持股需回補"
@@ -111,11 +119,11 @@ public sealed class MarketPriceService : IMarketPriceService
                 OfficialPriceBatchSummary? tpexSummary = null;
                 OfficialPriceBatchSummary? emergingSummary = null;
 
-                if (listedTradingDays < requiredTradingDays)
+                if (!listedSufficient)
                 {
                     reportProgress?.Invoke(
                         $"正在自動回補 MA120 歷史收盤價：抓取 {cursor:yyyy-MM-dd} 上市（TWSE）全部股票收盤價……" +
-                        $"（上市已累積 {listedTradingDays}/{requiredTradingDays} 個交易日）");
+                        $"（上市已累積 {listedTradingDays}/{requiredTradingDays} 個交易日{DescribeInsufficientStocks(listedInsufficientStocks, listedStockCounts, requiredTradingDays)}）");
                     twseSummary = await FetchAndSaveOneAsync(OfficialPriceJobType.HistoricalBackfill, cursor, MarketType.Listed, settings, cancellationToken).ConfigureAwait(false);
                     summaries.Add(twseSummary);
                 }
@@ -124,12 +132,12 @@ public sealed class MarketPriceService : IMarketPriceService
                     reportProgress?.Invoke($"上市（TWSE）歷史資料已足夠（{listedTradingDays}/{requiredTradingDays}），本日自動回補略過上市。");
                 }
 
-                if (otcTradingDays < requiredTradingDays)
+                if (!otcSufficient)
                 {
                     var isHoliday = twseSummary?.Status == OfficialPriceBatchStatus.Holiday;
                     reportProgress?.Invoke(
                         $"正在自動回補 MA120 歷史收盤價：抓取 {cursor:yyyy-MM-dd} 上櫃（TPEx）全部股票收盤價……" +
-                        $"（上櫃已累積 {otcTradingDays}/{requiredTradingDays} 個交易日）");
+                        $"（上櫃已累積 {otcTradingDays}/{requiredTradingDays} 個交易日{DescribeInsufficientStocks(otcInsufficientStocks, otcStockCounts, requiredTradingDays)}）");
                     tpexSummary = await FetchAndSaveOneAsync(
                         OfficialPriceJobType.HistoricalBackfill, cursor, MarketType.Otc, settings, cancellationToken,
                         treatDateMismatchAsHoliday: isHoliday).ConfigureAwait(false);
@@ -182,6 +190,33 @@ public sealed class MarketPriceService : IMarketPriceService
         return summaries;
     }
 
+    /// <summary>正規化並去重股票代碼清單；null 時回傳空陣列，維持向下相容（不指定持股代碼時只檢查市場整體）。</summary>
+    private static string[] NormalizeCodes(IReadOnlyCollection<string>? codes)
+        => (codes ?? [])
+            .Select(StrategyEvaluationService.NormalizeStockCode)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    /// <summary>組出「其中 X 檔仍不足」的細節文字，找不到值時視為 0（尚無任何資料）。</summary>
+    private static string DescribeInsufficientStocks(
+        IReadOnlyCollection<string> insufficientCodes,
+        IReadOnlyDictionary<string, int> counts,
+        int requiredTradingDays)
+    {
+        if (insufficientCodes.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var sample = insufficientCodes
+            .Take(5)
+            .Select(code => $"{code}:{(counts.TryGetValue(code, out var c) ? c : 0)}/{requiredTradingDays}")
+            .ToArray();
+        var more = insufficientCodes.Count > sample.Length ? "…" : string.Empty;
+        return $"，其中持股 {insufficientCodes.Count} 檔逐檔檢查仍不足（{string.Join("、", sample)}{more}）";
+    }
+
     /// <summary>組出單日回補結果的細節文字（供畫面顯示），例如「上市 新增 1023 筆、上櫃 新增 812 筆」或「休市」。</summary>
     private static string DescribeBackfillDay(
         DateOnly date,
@@ -210,7 +245,11 @@ public sealed class MarketPriceService : IMarketPriceService
                $"（回補前累積：上市 {listedTradingDays}/{requiredTradingDays}、上櫃 {otcTradingDays}/{requiredTradingDays}、{emergingProgress} 個交易日）";
     }
 
-    private async Task<IReadOnlyDictionary<string, int>> GetEmergingTradingDayCountsAsync(
+    /// <summary>
+    /// 逐檔取得指定股票在 referenceDate（含）以前的有效交易日數；用於逐檔歷史完整性判斷，
+    /// 不得只用市場整體交易日數判斷單一股票是否已足夠回補。stockCodes 為空時回傳空字典。
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, int>> GetStockTradingDayCountsAsync(
         IReadOnlyCollection<string> stockCodes,
         DateOnly referenceDate,
         int requiredTradingDays,

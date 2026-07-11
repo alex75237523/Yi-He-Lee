@@ -54,3 +54,5 @@
 > 2026-07-09 更新：已修正為 `AppContext.BaseDirectory`，並同步更新 `README.md`；詳見 `docs/05_異動紀錄.md`。同日也已完成首次實際 `dotnet restore／build／test` 並全數成功，詳見 `docs/06_建置驗證結果.md`。
 >
 > 2026-07-09 之後：正式均價來源已改為 TWSE／TPEx 官方每日收盤價，由系統自行計算 MA5／MA20／MA60／MA120；鉅亨網多頭／空頭清單保留為清單保存與交叉驗證，不再作為正式均價來源。鉅亨網擷取為 best-effort，不阻擋官方價格與策略流程。
+>
+> 2026-07-11 修正：歷史回補完成判斷改為逐檔股票檢查（不再只看市場整體交易日數）；新增 `StockCodeNormalizer`／`StockIdentityResolver`／`StockIdentityResolutionService` 統一股票代碼正規化、格式辨識與官方主檔補零驗證；Excel 表頭新增「現貨現價」同義字，並新增其他表格邊界偵測；Excel 輸出擴充為 14 欄含診斷資訊。分支 `fix/per-stock-moving-average-history`；`dotnet test` 通過 211／211（另 4 個 Integration 測試）。詳見 `docs/05_異動紀錄.md`。

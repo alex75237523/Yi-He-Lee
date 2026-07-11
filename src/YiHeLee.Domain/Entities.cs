@@ -57,7 +57,10 @@ public sealed record CustomerHolding(
     string? CurrentPriceIssue = null);
 
 /// <summary>均線策略通知結果。<see cref="CurrentPrice"/> 為判斷當下 Excel「現價」欄位（DDE）的值；
-/// AlertKind 為 CurrentPriceInvalid 時必為 null，原因寫在 TriggerDescription。</summary>
+/// AlertKind 為 CurrentPriceInvalid 時必為 null，原因寫在 TriggerDescription。
+/// <see cref="DiagnosticStatus"/>／<see cref="MissingReason"/>／<see cref="AvailableTradingDayCount"/>／
+/// <see cref="LatestAvailableTradeDate"/> 為 Excel 輸出診斷欄位（計算狀態、缺少原因、有效交易日數、最新收盤日期），
+/// 不得讓使用者只看到空白卻不知道原因。</summary>
 public sealed record StrategyAlert(
     DateOnly TradeDate,
     AlertKind AlertKind,
@@ -82,7 +85,11 @@ public sealed record StrategyAlert(
     IndicatorType? IndicatorType,
     string? SourceUrl,
     string? PriceSourceProvider = null,
-    DateTimeOffset? CalculatedAt = null);
+    DateTimeOffset? CalculatedAt = null,
+    string? DiagnosticStatus = null,
+    string? MissingReason = null,
+    int AvailableTradingDayCount = 0,
+    DateOnly? LatestAvailableTradeDate = null);
 
 /// <summary>
 /// TWSE／TPEx 官方來源單一股票、單一交易日的原始收盤價（Provider 輸出的來源 DTO）。
@@ -123,6 +130,8 @@ public sealed record OfficialStockPrice(
 /// <summary>
 /// 由本系統依官方收盤價自行計算的均線結果。CalculationStatus 為 InsufficientHistory 時，
 /// 對應天數的均線欄位必須是 null，不得以較少天數硬算，也不得產生該均線通知。
+/// <see cref="LatestAvailableTradeDate"/>／<see cref="MissingReason"/> 為逐檔歷史完整性診斷欄位，
+/// 供 Excel 輸出「最新收盤日期」「缺少原因」欄位使用，不得只留空白而沒有原因。
 /// </summary>
 public sealed record MovingAverageResult(
     string StockCode,
@@ -133,7 +142,18 @@ public sealed record MovingAverageResult(
     decimal? MovingAverage60,
     decimal? MovingAverage120,
     int AvailableTradingDayCount,
-    CalculationStatus CalculationStatus);
+    CalculationStatus CalculationStatus,
+    DateOnly? LatestAvailableTradeDate = null,
+    string? MissingReason = null)
+{
+    public bool HasMa5 => MovingAverage5 is not null;
+    public bool HasMa20 => MovingAverage20 is not null;
+    public bool HasMa60 => MovingAverage60 is not null;
+    public bool HasMa120 => MovingAverage120 is not null;
+
+    /// <summary>MA120 尚缺的有效交易日數；資料已足夠時為 0。</summary>
+    public int MissingTradingDaysForMa120 => Math.Max(0, 120 - AvailableTradingDayCount);
+}
 
 /// <summary>官方價格批次（每日排程或歷史回補）執行紀錄。</summary>
 public sealed record OfficialPriceBatchSummary(
@@ -265,6 +285,19 @@ public sealed record CnyesValidationRecord(
     string? SourceUrl,
     DateTimeOffset ValidatedAt,
     string? ErrorMessage);
+
+/// <summary>
+/// 單一股票代碼的正規化與官方身分解析結果，由 <c>StockIdentityResolutionService</c> 產生。
+/// <see cref="ResolvedCode"/> 可能與 <see cref="RawCode"/> 不同（例如 Excel 讀到「50」，
+/// 經官方主檔確認後解析為「0050」）；補零前一律先確認官方主檔存在對應代碼，不得盲目補零。
+/// </summary>
+public sealed record StockCodeResolution(
+    string RawCode,
+    string ResolvedCode,
+    MarketType? MarketType,
+    StockIdentity Identity,
+    bool IsRecognized,
+    string? UnrecognizedReason);
 
 public sealed record JobRunSummary(
     Guid JobId,

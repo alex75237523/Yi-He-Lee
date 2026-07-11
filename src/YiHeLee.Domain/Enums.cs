@@ -50,8 +50,14 @@ public enum CalculationStatus
     /// <summary>資料足夠，均線已正常計算。</summary>
     Ok = 1,
 
-    /// <summary>有效交易日數不足，對應均線欄位須為 null。</summary>
-    InsufficientHistory = 2
+    /// <summary>有效交易日數不足（逐檔檢查後仍不足），對應均線欄位須為 null。</summary>
+    InsufficientHistory = 2,
+
+    /// <summary>最新一筆官方收盤價日期不等於指定策略日期，當日收盤價尚未取得，不得以昨日資料替代。</summary>
+    TodayCloseMissing = 3,
+
+    /// <summary>逐檔歷史回補過程中發生錯誤（例如官方來源逾時或格式異常）導致資料缺口未補齊，非單純交易日不足。</summary>
+    BackfillFailed = 4
 }
 
 /// <summary>官方每日收盤價批次（TWSE／TPEx）狀態；每日排程與歷史回補共用同一組狀態。</summary>

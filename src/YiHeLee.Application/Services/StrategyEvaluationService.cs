@@ -19,7 +19,8 @@ public sealed class StrategyEvaluationService
         IReadOnlyList<CustomerHolding> holdings,
         IReadOnlyList<MovingAverageResult> movingAverages,
         IReadOnlyDictionary<string, MarketType> marketTypesByStockCode,
-        DateTimeOffset calculatedAt)
+        DateTimeOffset calculatedAt,
+        IReadOnlyDictionary<string, StockCodeResolution>? resolutions = null)
     {
         var byCode = movingAverages
             .GroupBy(x => NormalizeStockCode(x.StockCode), StringComparer.OrdinalIgnoreCase)
@@ -29,8 +30,43 @@ public sealed class StrategyEvaluationService
 
         foreach (var holding in holdings)
         {
-            var code = NormalizeStockCode(holding.StockCode);
-            MarketType? marketType = marketTypesByStockCode.TryGetValue(code, out var mt) ? mt : null;
+            var rawCode = NormalizeStockCode(holding.StockCode);
+            var resolution = resolutions is not null && resolutions.TryGetValue(rawCode, out var r) ? r : null;
+
+            // 逐檔股票身分驗證優先於現價／均線判斷：代碼無法識別（例如 8 位數金額誤判、格式不符）
+            // 或明確不納入均線策略（例如權證）時，直接產生診斷通知，不得繼續用未經確認的代碼查詢均線或誤算。
+            if (resolution is not null && (!resolution.IsRecognized || !resolution.Identity.IsEligibleForMovingAverageStrategy))
+            {
+                var identityDiagnosticStatus = !resolution.IsRecognized ? "股票代碼無法識別" : "非策略商品";
+                var reasonText = resolution.UnrecognizedReason ?? resolution.Identity.IneligibleReason ?? "股票代碼無法識別或非策略商品。";
+                result.Add(new StrategyAlert(
+                    tradeDate,
+                    AlertKind.TechnicalIndicatorMissing,
+                    holding.WorkbookPath,
+                    holding.SheetName,
+                    holding.CustomerName,
+                    holding.ExcelRow,
+                    holding.StockCode,
+                    holding.StockName,
+                    holding.CurrentPrice,
+                    holding.Quantity,
+                    null, null, null, null, null,
+                    false, false, false,
+                    reasonText,
+                    null,
+                    null,
+                    null,
+                    null,
+                    calculatedAt,
+                    identityDiagnosticStatus,
+                    reasonText,
+                    0,
+                    null));
+                continue;
+            }
+
+            var code = resolution?.ResolvedCode ?? rawCode;
+            MarketType? marketType = resolution?.MarketType ?? (marketTypesByStockCode.TryGetValue(code, out var mt) ? mt : null);
             var sourceProvider = marketType is null ? null : ToSourceProviderText(marketType.Value);
             byCode.TryGetValue(code, out var maForOutput);
 
@@ -61,17 +97,23 @@ public sealed class StrategyEvaluationService
                     null,
                     null,
                     sourceProvider,
-                    calculatedAt));
+                    calculatedAt,
+                    "Excel現價異常",
+                    issue,
+                    maForOutput?.AvailableTradingDayCount ?? 0,
+                    maForOutput?.LatestAvailableTradeDate));
                 continue;
             }
 
             if (!byCode.TryGetValue(code, out var ma) || ma.ClosePrice is null)
             {
-                var missingReason = marketType switch
-                {
-                    MarketType.Emerging => "TPEx 興櫃官方當日行情尚無此股票資料，無法判斷均線，禁止使用昨日資料補值。",
-                    _ => "TWSE／TPEx／TPEx興櫃 官方每日收盤價尚無此股票當日資料，無法判斷均線，禁止使用昨日資料補值。"
-                };
+                var (missingReason, missingDiagnosticStatus) = ma is null
+                    ? (marketType switch
+                        {
+                            MarketType.Emerging => "TPEx 興櫃官方當日行情尚無此股票資料，無法判斷均線，禁止使用昨日資料補值。",
+                            _ => "TWSE／TPEx／TPEx興櫃 官方每日收盤價尚無此股票當日資料，無法判斷均線，禁止使用昨日資料補值。"
+                        }, "當日收盤價缺失")
+                    : (ma.MissingReason ?? "當日尚無官方收盤價資料，無法判斷均線，禁止使用昨日資料補值。", "當日收盤價缺失");
                 result.Add(new StrategyAlert(
                     tradeDate,
                     AlertKind.TechnicalIndicatorMissing,
@@ -90,7 +132,11 @@ public sealed class StrategyEvaluationService
                     null,
                     null,
                     sourceProvider,
-                    calculatedAt));
+                    calculatedAt,
+                    missingDiagnosticStatus,
+                    missingReason,
+                    ma?.AvailableTradingDayCount ?? 0,
+                    ma?.LatestAvailableTradeDate));
                 continue;
             }
 
@@ -102,6 +148,16 @@ public sealed class StrategyEvaluationService
             {
                 continue;
             }
+
+            // 均線本身可能因逐檔歷史資料不足或回補失敗而部分為 null（例如只有 MA5、缺 MA20／60／120），
+            // 但只要已算出的均線確實觸發條件，仍必須通知；同時如實標示計算狀態與缺少原因，
+            // 不得把「部分均線空白」當成沒有說明的正常結果（見 docs/01_需求與規則.md）。
+            var diagnosticStatus = ma.CalculationStatus switch
+            {
+                CalculationStatus.Ok => "正常",
+                CalculationStatus.BackfillFailed => "歷史回補失敗",
+                _ => "歷史資料不足"
+            };
 
             var triggers = new List<string>();
             if (ma5Triggered) triggers.Add("5 日均價");
@@ -132,7 +188,11 @@ public sealed class StrategyEvaluationService
                 null,
                 null,
                 sourceProvider,
-                calculatedAt));
+                calculatedAt,
+                diagnosticStatus,
+                ma.MissingReason,
+                ma.AvailableTradingDayCount,
+                ma.LatestAvailableTradeDate));
         }
 
         return result;
@@ -146,5 +206,6 @@ public sealed class StrategyEvaluationService
         _ => null
     };
 
-    public static string NormalizeStockCode(string value) => value.Trim().ToUpperInvariant();
+    /// <summary>統一委派給 <see cref="StockCodeNormalizer"/>，全系統唯一的股票代碼正規化規則來源。</summary>
+    public static string NormalizeStockCode(string value) => StockCodeNormalizer.Normalize(value);
 }

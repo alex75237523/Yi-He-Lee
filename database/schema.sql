@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS JobRunDetails (
 );
 
 -- 每日 Excel 有效持股快照。
+-- 2026-07-11 恢復雙價格判斷：「進場價/平均價」與「現價」是兩個完全獨立的欄位，不得混用或互相代替，
+-- 因此新增 EntryAveragePrice／EntryAveragePriceIssue，與既有 CurrentPrice／CurrentPriceIssue 分開保存。
 CREATE TABLE IF NOT EXISTS CustomerHoldingSnapshots (
     Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,  -- 流水號
     JobId TEXT NOT NULL,                            -- Job ID
@@ -78,6 +80,8 @@ CREATE TABLE IF NOT EXISTS CustomerHoldingSnapshots (
     StockName TEXT NOT NULL,                        -- 股票名稱
     CurrentPrice NUMERIC NULL,                      -- Excel「現價」欄位（外部 DDE）；無法判讀時為 NULL
     CurrentPriceIssue TEXT NULL,                    -- 現價無效原因（例如 #N/A、空白、0、負數、無法解析文字）
+    EntryAveragePrice NUMERIC NULL,                 -- Excel「進場價/平均價」欄位（非 DDE）；無法判讀時為 NULL
+    EntryAveragePriceIssue TEXT NULL,               -- 進場價/平均價無效原因（例如空白、0、負數、Excel錯誤值、無法解析文字）
     Quantity NUMERIC NULL,                          -- 張數
     HoldingKey TEXT NOT NULL,                       -- 持股唯一識別
     CreatedAt TEXT NOT NULL,                        -- 建立時間
@@ -86,11 +90,14 @@ CREATE TABLE IF NOT EXISTS CustomerHoldingSnapshots (
 );
 
 -- 每日策略通知與無資料清單。
+-- 2026-07-11 恢復雙價格判斷：同一持股可能同時產生「進場價/平均價異常」與「現價異常」兩筆通知，
+-- 因此唯一鍵新增 AlertKind，避免兩筆通知因同一組 (TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode)
+-- 互相覆蓋；同時新增 EntryAveragePrice／EntryAveragePriceIssue／CurrentPriceIssue 欄位。
 CREATE TABLE IF NOT EXISTS StrategyAlerts (
     Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,  -- 流水號
     JobId TEXT NOT NULL,                            -- Job ID
     TradeDate TEXT NOT NULL,                        -- 交易日期
-    AlertKind INTEGER NOT NULL,                     -- 1均線觸發／2缺少技術資料／3現價無效（DDE）
+    AlertKind INTEGER NOT NULL,                     -- 1均線觸發／2缺少技術資料／3現價無效（DDE）／4進場價/平均價無效
     WorkbookPath TEXT NOT NULL,                     -- Excel 完整路徑
     SheetName TEXT NOT NULL,                        -- 客戶頁籤
     CustomerName TEXT NOT NULL,                     -- 客戶姓名
@@ -98,15 +105,18 @@ CREATE TABLE IF NOT EXISTS StrategyAlerts (
     StockCode TEXT NOT NULL,                        -- 股票代碼
     StockName TEXT NOT NULL,                        -- 股票名稱
     CurrentPrice NUMERIC NULL,                      -- 判斷當下 Excel「現價」欄位（外部 DDE）；現價無效通知列為 NULL
+    CurrentPriceIssue TEXT NULL,                    -- 現價無效原因
+    EntryAveragePrice NUMERIC NULL,                 -- 判斷當下 Excel「進場價/平均價」欄位（非 DDE）；無效通知列為 NULL
+    EntryAveragePriceIssue TEXT NULL,               -- 進場價/平均價無效原因
     Quantity NUMERIC NULL,                          -- 張數
     ClosePrice NUMERIC NULL,                        -- 收盤價
     MovingAverage5 NUMERIC NULL,                    -- 5日均價
     MovingAverage20 NUMERIC NULL,                   -- 20日均價
     MovingAverage60 NUMERIC NULL,                   -- 60日均價
     MovingAverage120 NUMERIC NULL,                  -- 120日均價
-    TriggeredMa5 INTEGER NOT NULL,                  -- 是否觸發5日均價
-    TriggeredMa20 INTEGER NOT NULL,                 -- 是否觸發20日均價
-    TriggeredMa120 INTEGER NOT NULL,                -- 是否觸發120日均價
+    TriggeredMa5 INTEGER NOT NULL,                  -- 是否觸發5日均價（進場價/平均價與現價需同時達標）
+    TriggeredMa20 INTEGER NOT NULL,                 -- 是否觸發20日均價（進場價/平均價與現價需同時達標）
+    TriggeredMa120 INTEGER NOT NULL,                -- 是否觸發120日均價（進場價/平均價與現價需同時達標）
     TriggerDescription TEXT NOT NULL,               -- 觸發說明
     MarketType INTEGER NULL,                        -- 市場別
     IndicatorType INTEGER NULL,                     -- 資料類型
@@ -114,7 +124,7 @@ CREATE TABLE IF NOT EXISTS StrategyAlerts (
     CreatedAt TEXT NOT NULL,                        -- 建立時間
     UpdatedAt TEXT NOT NULL,                        -- 最後更新時間
     FOREIGN KEY (JobId) REFERENCES JobRuns(JobId),
-    CONSTRAINT UQ_StrategyAlerts UNIQUE (TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode)
+    CONSTRAINT UQ_StrategyAlerts UNIQUE (TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode, AlertKind)
 );
 
 -- =====================================================================

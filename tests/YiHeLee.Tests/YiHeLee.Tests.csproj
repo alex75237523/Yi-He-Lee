@@ -17,6 +17,7 @@
     <ProjectReference Include="..\..\src\YiHeLee.Domain\YiHeLee.Domain.csproj" />
     <ProjectReference Include="..\..\src\YiHeLee.Application\YiHeLee.Application.csproj" />
     <ProjectReference Include="..\..\src\YiHeLee.Infrastructure\YiHeLee.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\YiHeLee.App\YiHeLee.App.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />

@@ -5,14 +5,19 @@ namespace YiHeLee.Application.Services;
 /// <summary>
 /// 均線策略判斷。正式 MA5／MA20／MA120 一律來自本系統依 TWSE／TPEx 官方收盤價自行計算的
 /// <see cref="MovingAverageResult"/>；鉅亨網多頭／空頭排列僅作交叉驗證與清單保存，不再是正式均價來源。
+/// 2026-07-11 正式恢復雙價格判斷：客戶 Excel「進場價/平均價」與「現價」是兩個完全獨立、不得混用的欄位，
+/// 每一條均價都必須「進場價/平均價」與「現價」同時大於或等於該均價才算成立（見 <see cref="IsDualPriceMatch"/>）。
 /// </summary>
 public sealed class StrategyEvaluationService
 {
     /// <summary>
-    /// 依需求逐項判斷 MA5、MA20、MA120 是否小於或等於 Excel「現價」欄位（外部 DDE）；任一條件成立即產生通知。
-    /// MA60 僅保存與顯示，不參與觸發。任一均線因交易日數不足而為 null 時，該項不得觸發、也不得硬算。
-    /// 現價因 DDE 錯誤值、空白、0 或無法解析而無效時，必須產生「現價異常」通知告知使用者，不得靜默略過，
-    /// 也不得以任何其他價格（收盤價、昨日現價）代替判斷。
+    /// 依需求逐項判斷 MA5、MA20、MA120：每一條均價都必須「進場價/平均價」與「現價」同時大於或等於該均價
+    /// 才算成立（<see cref="IsDualPriceMatch"/>），任一條件成立即產生通知。MA60 僅保存與顯示，不參與觸發。
+    /// 任一均線因交易日數不足而為 null 時，該項不得觸發、也不得硬算。
+    /// 「進場價/平均價」與「現價」皆可能個別無效（Excel 錯誤值、空白、0、負數或無法解析）；兩者是完全獨立的
+    /// 欄位，不得混用、不得互相代替、也不得只取其中一個判斷。任一價格無效就不得觸發，且必須分別產生對應的
+    /// 異常通知（<see cref="AlertKind.EntryAveragePriceInvalid"/>／<see cref="AlertKind.CurrentPriceInvalid"/>），
+    /// 兩者同時無效時兩個異常都必須讓使用者看見，不得只顯示其中一個。
     /// </summary>
     public IReadOnlyList<StrategyAlert> Evaluate(
         DateOnly tradeDate,
@@ -33,7 +38,7 @@ public sealed class StrategyEvaluationService
             var rawCode = NormalizeStockCode(holding.StockCode);
             var resolution = resolutions is not null && resolutions.TryGetValue(rawCode, out var r) ? r : null;
 
-            // 逐檔股票身分驗證優先於現價／均線判斷：代碼無法識別（例如 8 位數金額誤判、格式不符）
+            // 逐檔股票身分驗證優先於價格／均線判斷：代碼無法識別（例如 8 位數金額誤判、格式不符）
             // 或明確不納入均線策略（例如權證）時，直接產生診斷通知，不得繼續用未經確認的代碼查詢均線或誤算。
             if (resolution is not null && (!resolution.IsRecognized || !resolution.Identity.IsEligibleForMovingAverageStrategy))
             {
@@ -61,6 +66,9 @@ public sealed class StrategyEvaluationService
                     identityDiagnosticStatus,
                     reasonText,
                     0,
+                    null,
+                    holding.EntryAveragePrice,
+                    null,
                     null));
                 continue;
             }
@@ -70,40 +78,88 @@ public sealed class StrategyEvaluationService
             var sourceProvider = marketType is null ? null : ToSourceProviderText(marketType.Value);
             byCode.TryGetValue(code, out var maForOutput);
 
-            if (holding.CurrentPrice is not decimal currentPrice)
+            // 「進場價/平均價」與「現價」是兩個完全獨立的欄位，各自可能無效；任一無效都不得觸發，
+            // 且必須各自產生對應的異常通知，不得只顯示其中一個而隱藏另一個。
+            var entryAveragePriceInvalid = holding.EntryAveragePrice is null;
+            var currentPriceInvalid = holding.CurrentPrice is null;
+
+            if (entryAveragePriceInvalid || currentPriceInvalid)
             {
-                // MA5／MA20／MA60／MA120 是依 TWSE／TPEx 官方收盤價自行計算，與 Excel「現價」欄位（DDE）無關；
-                // 現價異常只代表無法判斷是否觸發，均價本身若已算出仍必須列在「每日五日均價策略」頁籤，不得因此留白。
-                var issue = string.IsNullOrWhiteSpace(holding.CurrentPriceIssue) ? "原因不明" : holding.CurrentPriceIssue;
-                result.Add(new StrategyAlert(
-                    tradeDate,
-                    AlertKind.CurrentPriceInvalid,
-                    holding.WorkbookPath,
-                    holding.SheetName,
-                    holding.CustomerName,
-                    holding.ExcelRow,
-                    holding.StockCode,
-                    holding.StockName,
-                    null,
-                    holding.Quantity,
-                    maForOutput?.ClosePrice,
-                    maForOutput?.MovingAverage5,
-                    maForOutput?.MovingAverage20,
-                    maForOutput?.MovingAverage60,
-                    maForOutput?.MovingAverage120,
-                    false, false, false,
-                    $"現價無效，無法判斷：{issue}。請確認看盤軟體已開啟且 DDE 連線正常後，再重新執行。",
-                    marketType,
-                    null,
-                    null,
-                    sourceProvider,
-                    calculatedAt,
-                    "Excel現價異常",
-                    issue,
-                    maForOutput?.AvailableTradingDayCount ?? 0,
-                    maForOutput?.LatestAvailableTradeDate));
+                if (entryAveragePriceInvalid)
+                {
+                    var issue = string.IsNullOrWhiteSpace(holding.EntryAveragePriceIssue) ? "原因不明" : holding.EntryAveragePriceIssue;
+                    result.Add(new StrategyAlert(
+                        tradeDate,
+                        AlertKind.EntryAveragePriceInvalid,
+                        holding.WorkbookPath,
+                        holding.SheetName,
+                        holding.CustomerName,
+                        holding.ExcelRow,
+                        holding.StockCode,
+                        holding.StockName,
+                        holding.CurrentPrice,
+                        holding.Quantity,
+                        maForOutput?.ClosePrice,
+                        maForOutput?.MovingAverage5,
+                        maForOutput?.MovingAverage20,
+                        maForOutput?.MovingAverage60,
+                        maForOutput?.MovingAverage120,
+                        false, false, false,
+                        $"進場價/平均價無效，無法判斷：{issue}。請確認 Excel 該欄位內容後再重新執行。",
+                        marketType,
+                        null,
+                        null,
+                        sourceProvider,
+                        calculatedAt,
+                        "進場價/平均價異常",
+                        issue,
+                        maForOutput?.AvailableTradingDayCount ?? 0,
+                        maForOutput?.LatestAvailableTradeDate,
+                        null,
+                        issue,
+                        holding.CurrentPriceIssue));
+                }
+
+                if (currentPriceInvalid)
+                {
+                    var issue = string.IsNullOrWhiteSpace(holding.CurrentPriceIssue) ? "原因不明" : holding.CurrentPriceIssue;
+                    result.Add(new StrategyAlert(
+                        tradeDate,
+                        AlertKind.CurrentPriceInvalid,
+                        holding.WorkbookPath,
+                        holding.SheetName,
+                        holding.CustomerName,
+                        holding.ExcelRow,
+                        holding.StockCode,
+                        holding.StockName,
+                        null,
+                        holding.Quantity,
+                        maForOutput?.ClosePrice,
+                        maForOutput?.MovingAverage5,
+                        maForOutput?.MovingAverage20,
+                        maForOutput?.MovingAverage60,
+                        maForOutput?.MovingAverage120,
+                        false, false, false,
+                        $"現價無效，無法判斷：{issue}。請確認看盤軟體已開啟且 DDE 連線正常後，再重新執行。",
+                        marketType,
+                        null,
+                        null,
+                        sourceProvider,
+                        calculatedAt,
+                        "Excel現價異常",
+                        issue,
+                        maForOutput?.AvailableTradingDayCount ?? 0,
+                        maForOutput?.LatestAvailableTradeDate,
+                        holding.EntryAveragePrice,
+                        holding.EntryAveragePriceIssue,
+                        issue));
+                }
+
                 continue;
             }
+
+            var entryAveragePrice = holding.EntryAveragePrice!.Value;
+            var currentPrice = holding.CurrentPrice!.Value;
 
             if (!byCode.TryGetValue(code, out var ma) || ma.ClosePrice is null)
             {
@@ -136,13 +192,16 @@ public sealed class StrategyEvaluationService
                     missingDiagnosticStatus,
                     missingReason,
                     ma?.AvailableTradingDayCount ?? 0,
-                    ma?.LatestAvailableTradeDate));
+                    ma?.LatestAvailableTradeDate,
+                    entryAveragePrice,
+                    null,
+                    null));
                 continue;
             }
 
-            var ma5Triggered = ma.MovingAverage5 is decimal ma5 && ma5 <= currentPrice;
-            var ma20Triggered = ma.MovingAverage20 is decimal ma20 && ma20 <= currentPrice;
-            var ma120Triggered = ma.MovingAverage120 is decimal ma120 && ma120 <= currentPrice;
+            var ma5Triggered = IsDualPriceMatch(ma.MovingAverage5, entryAveragePrice, currentPrice);
+            var ma20Triggered = IsDualPriceMatch(ma.MovingAverage20, entryAveragePrice, currentPrice);
+            var ma120Triggered = IsDualPriceMatch(ma.MovingAverage120, entryAveragePrice, currentPrice);
 
             if (!ma5Triggered && !ma20Triggered && !ma120Triggered)
             {
@@ -183,7 +242,7 @@ public sealed class StrategyEvaluationService
                 ma5Triggered,
                 ma20Triggered,
                 ma120Triggered,
-                $"現價已大於或等於：{string.Join("、", triggers)}",
+                $"進場價/平均價與現價已同時大於或等於：{string.Join("、", triggers)}",
                 marketType,
                 null,
                 null,
@@ -192,7 +251,10 @@ public sealed class StrategyEvaluationService
                 diagnosticStatus,
                 ma.MissingReason,
                 ma.AvailableTradingDayCount,
-                ma.LatestAvailableTradeDate));
+                ma.LatestAvailableTradeDate,
+                entryAveragePrice,
+                null,
+                null));
         }
 
         return result;
@@ -200,9 +262,9 @@ public sealed class StrategyEvaluationService
 
     /// <summary>
     /// 產生「每一筆有效持股」的完整計算結果，供 Excel「每日五日均價策略」頁籤輸出使用。
-    /// 與 <see cref="Evaluate"/> 不同，本方法絕對不得因為未觸發、DDE 現價無效或均線暫時缺口而略過
-    /// 任何一筆持股；DDE 現價異常只能讓該筆的 <see cref="HoldingStrategyResult.OverallResult"/>
-    /// 顯示為「現價無效，暫時無法判斷」，其餘官方收盤價、MA5／MA20／MA60／MA120、有效交易日數、
+    /// 與 <see cref="Evaluate"/> 不同，本方法絕對不得因為未觸發、進場價/平均價或現價無效、或均線暫時缺口
+    /// 而略過任何一筆持股；任一價格無效只能讓該筆的 <see cref="HoldingStrategyResult.OverallResult"/>
+    /// 顯示為「暫時無法判斷」，其餘官方收盤價、MA5／MA20／MA60／MA120、有效交易日數、
     /// 鉅亨交叉驗證狀態一律照實填入，不得留白、不得標記為「均線計算失敗」。
     /// </summary>
     public IReadOnlyList<HoldingStrategyResult> EvaluateAll(
@@ -225,8 +287,9 @@ public sealed class StrategyEvaluationService
             var rawCode = NormalizeStockCode(holding.StockCode);
             var resolution = resolutions is not null && resolutions.TryGetValue(rawCode, out var r) ? r : null;
             var currentPriceStatus = holding.CurrentPrice is not null ? "正常" : "無效";
+            var entryAveragePriceStatus = holding.EntryAveragePrice is not null ? "正常" : "無效";
 
-            // 逐檔股票身分驗證優先於現價／均線判斷：代碼無法識別或明確不納入均線策略（例如權證）時，
+            // 逐檔股票身分驗證優先於價格／均線判斷：代碼無法識別或明確不納入均線策略（例如權證）時，
             // 直接產生診斷列；此類持股本來就不應查詢均線，但仍必須輸出一列讓使用者可追查原因。
             if (resolution is not null && (!resolution.IsRecognized || !resolution.Identity.IsEligibleForMovingAverageStrategy))
             {
@@ -235,7 +298,9 @@ public sealed class StrategyEvaluationService
                 result.Add(new HoldingStrategyResult(
                     tradeDate, holding.CustomerName, holding.SheetName, holding.ExcelRow,
                     holding.StockCode, resolution.ResolvedCode, holding.StockName,
-                    resolution.MarketType, holding.CurrentPrice, currentPriceStatus, holding.CurrentPriceIssue,
+                    resolution.MarketType,
+                    holding.EntryAveragePrice, entryAveragePriceStatus, holding.EntryAveragePriceIssue,
+                    holding.CurrentPrice, currentPriceStatus, holding.CurrentPriceIssue,
                     null, null, null, null, null, 0, null,
                     identityDiagnosticStatus, reasonText, "不適用",
                     false, false, false,
@@ -248,25 +313,50 @@ public sealed class StrategyEvaluationService
             byCode.TryGetValue(code, out var ma);
             var cnyesStatus = cnyesValidationStatuses is not null && cnyesValidationStatuses.TryGetValue(code, out var cv) ? cv : "不適用";
 
-            // 現價（DDE）無效：僅影響最後的現價比較，均線本身若已算出仍必須照實輸出，不得留白，
-            // 也不得標記為「均線計算失敗」。
-            if (holding.CurrentPrice is not decimal currentPrice)
+            // 「進場價/平均價」與「現價」皆可能個別無效：僅影響最後的雙價格比較，均線本身若已算出
+            // 仍必須照實輸出，不得留白，也不得標記為「均線計算失敗」。兩者同時無效時，兩個原因都必須
+            // 能讓使用者看見，本型別每一筆持股只有一列，因此原因會合併顯示於 MissingReason／TriggerDescription。
+            if (holding.EntryAveragePrice is null || holding.CurrentPrice is null)
             {
-                var issue = string.IsNullOrWhiteSpace(holding.CurrentPriceIssue) ? "原因不明" : holding.CurrentPriceIssue;
+                var entryIssue = holding.EntryAveragePrice is null
+                    ? (string.IsNullOrWhiteSpace(holding.EntryAveragePriceIssue) ? "原因不明" : holding.EntryAveragePriceIssue)
+                    : null;
+                var currentIssue = holding.CurrentPrice is null
+                    ? (string.IsNullOrWhiteSpace(holding.CurrentPriceIssue) ? "原因不明" : holding.CurrentPriceIssue)
+                    : null;
                 var maCalcStatus = ma is null ? "當日收盤價缺失" : DescribeCalculationStatus(ma.CalculationStatus);
+
+                var (overallResult, combinedReason) = (entryIssue, currentIssue) switch
+                {
+                    (not null, not null) => (
+                        "現價與進場價/平均價皆無效，暫時無法判斷",
+                        $"進場價/平均價無效：{entryIssue}；現價無效：{currentIssue}。請分別確認 Excel 儲存格內容與看盤軟體 DDE 連線後，再重新執行。"),
+                    (not null, null) => (
+                        "進場價/平均價無效，暫時無法判斷",
+                        $"進場價/平均價無效，無法判斷：{entryIssue}。請確認 Excel 該欄位內容後再重新執行。"),
+                    _ => (
+                        "現價無效，暫時無法判斷",
+                        $"現價無效，無法判斷：{currentIssue}。請確認看盤軟體已開啟且 DDE 連線正常後，再重新執行。")
+                };
+
                 result.Add(new HoldingStrategyResult(
                     tradeDate, holding.CustomerName, holding.SheetName, holding.ExcelRow,
                     holding.StockCode, code, holding.StockName,
-                    marketType, null, currentPriceStatus, issue,
+                    marketType,
+                    holding.EntryAveragePrice, entryAveragePriceStatus, holding.EntryAveragePriceIssue,
+                    holding.CurrentPrice, currentPriceStatus, holding.CurrentPriceIssue,
                     ma?.ClosePrice, ma?.MovingAverage5, ma?.MovingAverage20, ma?.MovingAverage60, ma?.MovingAverage120,
                     ma?.AvailableTradingDayCount ?? 0, ma?.LatestAvailableTradeDate,
                     maCalcStatus, ma?.MissingReason, cnyesStatus,
                     false, false, false,
-                    "現價無效，暫時無法判斷",
-                    $"現價無效，無法判斷：{issue}。請確認看盤軟體已開啟且 DDE 連線正常後，再重新執行。",
+                    overallResult,
+                    combinedReason,
                     calculatedAt));
                 continue;
             }
+
+            var entryAveragePrice = holding.EntryAveragePrice.Value;
+            var currentPrice = holding.CurrentPrice.Value;
 
             if (ma is null || ma.ClosePrice is null)
             {
@@ -280,7 +370,9 @@ public sealed class StrategyEvaluationService
                 result.Add(new HoldingStrategyResult(
                     tradeDate, holding.CustomerName, holding.SheetName, holding.ExcelRow,
                     holding.StockCode, code, holding.StockName,
-                    marketType, currentPrice, currentPriceStatus, holding.CurrentPriceIssue,
+                    marketType,
+                    entryAveragePrice, entryAveragePriceStatus, holding.EntryAveragePriceIssue,
+                    currentPrice, currentPriceStatus, holding.CurrentPriceIssue,
                     null, null, null, null, null,
                     ma?.AvailableTradingDayCount ?? 0, ma?.LatestAvailableTradeDate,
                     missingDiagnosticStatus, missingReason, cnyesStatus,
@@ -289,9 +381,9 @@ public sealed class StrategyEvaluationService
                 continue;
             }
 
-            var ma5Triggered = ma.MovingAverage5 is decimal ma5 && ma5 <= currentPrice;
-            var ma20Triggered = ma.MovingAverage20 is decimal ma20 && ma20 <= currentPrice;
-            var ma120Triggered = ma.MovingAverage120 is decimal ma120 && ma120 <= currentPrice;
+            var ma5Triggered = IsDualPriceMatch(ma.MovingAverage5, entryAveragePrice, currentPrice);
+            var ma20Triggered = IsDualPriceMatch(ma.MovingAverage20, entryAveragePrice, currentPrice);
+            var ma120Triggered = IsDualPriceMatch(ma.MovingAverage120, entryAveragePrice, currentPrice);
             var anyTriggered = ma5Triggered || ma20Triggered || ma120Triggered;
 
             var triggers = new List<string>();
@@ -299,13 +391,15 @@ public sealed class StrategyEvaluationService
             if (ma20Triggered) triggers.Add("20 日均價");
             if (ma120Triggered) triggers.Add("120 日均價");
             var triggerDescription = anyTriggered
-                ? $"現價已大於或等於：{string.Join("、", triggers)}"
-                : "現價未達 MA5／MA20／MA120 任一條件，未觸發。";
+                ? $"進場價/平均價與現價已同時大於或等於：{string.Join("、", triggers)}"
+                : "進場價/平均價與現價未同時達到 MA5／MA20／MA120 任一條件，未觸發。";
 
             result.Add(new HoldingStrategyResult(
                 tradeDate, holding.CustomerName, holding.SheetName, holding.ExcelRow,
                 holding.StockCode, code, holding.StockName,
-                marketType, currentPrice, currentPriceStatus, holding.CurrentPriceIssue,
+                marketType,
+                entryAveragePrice, entryAveragePriceStatus, holding.EntryAveragePriceIssue,
+                currentPrice, currentPriceStatus, holding.CurrentPriceIssue,
                 ma.ClosePrice, ma.MovingAverage5, ma.MovingAverage20, ma.MovingAverage60, ma.MovingAverage120,
                 ma.AvailableTradingDayCount, ma.LatestAvailableTradeDate,
                 DescribeCalculationStatus(ma.CalculationStatus), ma.MissingReason, cnyesStatus,
@@ -316,6 +410,21 @@ public sealed class StrategyEvaluationService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 單一均價的雙價格判斷核心：「進場價/平均價」與「現價」必須同時大於或等於該均價才算成立。
+    /// <see cref="Evaluate"/>、<see cref="EvaluateAll"/> 與畫面顯示都必須透過本方法判斷，
+    /// 不得各自重複實作而產生不一致的結果。均線為 null（交易日數不足）時一律不成立，也不得硬算。
+    /// </summary>
+    private static bool IsDualPriceMatch(
+        decimal? movingAverage,
+        decimal entryAveragePrice,
+        decimal currentPrice)
+    {
+        return movingAverage is decimal ma
+            && entryAveragePrice >= ma
+            && currentPrice >= ma;
     }
 
     private static string DescribeCalculationStatus(CalculationStatus status) => status switch

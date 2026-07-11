@@ -4,6 +4,9 @@
 
 在保留現有架構與既有功能的前提下，讓 `Yi He Lee` 可以在 Windows 正常 Restore、Build、Test、Publish，並符合完整需求。
 
+> 2026-07-12 更新：「進場價與現價雙重均價條件」需求已完成實作（分支 `fix/dual-price-moving-average-condition`），
+> 恢復並取代 2026-07-11 曾記載的「現價單一欄位」更正。詳見 `docs/05_異動紀錄.md`、`docs/06_建置驗證結果.md`。
+
 ## 第一階段：只做診斷
 
 1. 顯示目前分支及工作樹：

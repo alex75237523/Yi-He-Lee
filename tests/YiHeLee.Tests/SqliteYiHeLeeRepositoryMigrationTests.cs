@@ -6,9 +6,14 @@ using YiHeLee.Infrastructure.Data;
 namespace YiHeLee.Tests;
 
 /// <summary>
-/// 2026-07-11 需求更正：策略比較基準由「進場價／平均價」改為 Excel「現價」欄位（DDE）。
-/// 驗證舊資料庫的 EntryAveragePrice 欄位會自動遷移為可為 NULL 的 CurrentPrice，
-/// 且遷移後可正常寫入「現價無效」（CurrentPrice 為 NULL）的通知列。
+/// 2026-07-09 修正：策略比較基準曾一度改為 Excel「現價」欄位（DDE）；舊資料庫的 EntryAveragePrice
+/// 欄位會自動遷移為可為 NULL 的 CurrentPrice，且遷移後可正常寫入「現價無效」（CurrentPrice 為 NULL）
+/// 的通知列。2026-07-11 正式恢復雙價格判斷後，「進場價/平均價」以全新獨立欄位
+/// （同樣命名為 EntryAveragePrice，但與舊版歷史欄位無關）重新出現；本測試檔案同時驗證：
+/// (1) 舊版歷史搬移邏輯不會被新版同名欄位誤觸發而覆蓋 CurrentPrice；
+/// (2) 新版 EntryAveragePrice／EntryAveragePriceIssue／CurrentPriceIssue 欄位可安全新增、
+///     分別保存讀回且互不覆蓋；(3) StrategyAlerts 唯一鍵新增 AlertKind 後，同一持股可同時保存
+///     「進場價/平均價異常」與「現價異常」兩筆通知而不互相覆蓋。
 /// </summary>
 public sealed class SqliteYiHeLeeRepositoryMigrationTests : IDisposable
 {
@@ -33,12 +38,16 @@ public sealed class SqliteYiHeLeeRepositoryMigrationTests : IDisposable
 
         foreach (var table in new[] { "CustomerHoldingSnapshots", "StrategyAlerts" })
         {
-            Assert.False(await ColumnExistsAsync(connection, table, "EntryAveragePrice"));
             Assert.True(await ColumnExistsAsync(connection, table, "CurrentPrice"));
+            // 2026-07-11 恢復雙價格判斷後，EntryAveragePrice 是全新獨立欄位（與舊版同名歷史欄位無關），
+            // 必須存在，但舊資料列搬移時沒有對應資料，不得誤用舊版「進場價」欄位的歷史數值填入，須為 NULL。
+            Assert.True(await ColumnExistsAsync(connection, table, "EntryAveragePrice"));
         }
 
         Assert.Equal(123.5m, Convert.ToDecimal(await ScalarAsync(connection, "SELECT CurrentPrice FROM CustomerHoldingSnapshots;")));
         Assert.Equal(123.5m, Convert.ToDecimal(await ScalarAsync(connection, "SELECT CurrentPrice FROM StrategyAlerts;")));
+        Assert.Equal(DBNull.Value, await ScalarAsync(connection, "SELECT EntryAveragePrice FROM CustomerHoldingSnapshots;"));
+        Assert.Equal(DBNull.Value, await ScalarAsync(connection, "SELECT EntryAveragePrice FROM StrategyAlerts;"));
         Assert.Equal(1, Convert.ToInt32(await ScalarAsync(connection, "SELECT COUNT(*) FROM CustomerHoldingSnapshots_Legacy_Check;")));
     }
 
@@ -92,6 +101,127 @@ public sealed class SqliteYiHeLeeRepositoryMigrationTests : IDisposable
 
         var savedIssue = await ScalarAsync(connection, "SELECT CurrentPriceIssue FROM CustomerHoldingSnapshots WHERE StockCode = '5351';");
         Assert.Equal("#N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）", savedIssue);
+    }
+
+    [Fact]
+    public async Task 舊資料庫可安全新增進場價平均價欄位且保留既有資料列()
+    {
+        CreateSchemaWithCurrentPriceButNoIssueColumn();
+
+        var repository = new SqliteYiHeLeeRepository(_databasePath, new FixedClock());
+        await repository.InitializeAsync();
+
+        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await connection.OpenAsync();
+
+        Assert.True(await ColumnExistsAsync(connection, "CustomerHoldingSnapshots", "EntryAveragePrice"));
+        Assert.True(await ColumnExistsAsync(connection, "CustomerHoldingSnapshots", "EntryAveragePriceIssue"));
+        Assert.True(await ColumnExistsAsync(connection, "StrategyAlerts", "EntryAveragePrice"));
+        Assert.True(await ColumnExistsAsync(connection, "StrategyAlerts", "EntryAveragePriceIssue"));
+        Assert.True(await ColumnExistsAsync(connection, "StrategyAlerts", "CurrentPriceIssue"));
+        // 既有資料列（遷移前已存在）必須保留，不得因新增欄位或重建資料表而遺失。
+        Assert.Equal(1, Convert.ToInt32(await ScalarAsync(connection, "SELECT COUNT(*) FROM CustomerHoldingSnapshots WHERE StockCode = '5285';")));
+    }
+
+    [Fact]
+    public async Task 進場價與現價可分別保存及讀回_原因不會互相覆蓋()
+    {
+        var repository = new SqliteYiHeLeeRepository(_databasePath, new FixedClock());
+        await repository.InitializeAsync();
+
+        var jobId = await repository.BeginJobAsync(TradeDate, 1, Now(), CancellationToken.None);
+        var holding = new CustomerHolding(
+            TradeDate, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
+            520m, 8, @"C:\DATA\親帶績效.XLSX|王保仁-A|4|5285",
+            CurrentPriceIssue: null,
+            EntryAveragePrice: 501m,
+            EntryAveragePriceIssue: null);
+
+        await repository.SaveHoldingsAndAlertsAsync(jobId, TradeDate, @"C:\Data\親帶績效.xlsx", [holding], [], CancellationToken.None);
+
+        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await connection.OpenAsync();
+        Assert.Equal(520m, Convert.ToDecimal(await ScalarAsync(connection, "SELECT CurrentPrice FROM CustomerHoldingSnapshots WHERE StockCode = '5285';")));
+        Assert.Equal(501m, Convert.ToDecimal(await ScalarAsync(connection, "SELECT EntryAveragePrice FROM CustomerHoldingSnapshots WHERE StockCode = '5285';")));
+        Assert.Equal(DBNull.Value, await ScalarAsync(connection, "SELECT CurrentPriceIssue FROM CustomerHoldingSnapshots WHERE StockCode = '5285';"));
+        Assert.Equal(DBNull.Value, await ScalarAsync(connection, "SELECT EntryAveragePriceIssue FROM CustomerHoldingSnapshots WHERE StockCode = '5285';"));
+    }
+
+    [Fact]
+    public async Task 同一持股進場價與現價同時無效時_兩筆通知都能保存不互相覆蓋()
+    {
+        // StrategyAlerts 唯一鍵新增 AlertKind 前，(TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode)
+        // 相同的兩筆通知會互相覆蓋，導致其中一個異常原因遺失；本測試驗證修正後兩筆各自保存。
+        var repository = new SqliteYiHeLeeRepository(_databasePath, new FixedClock());
+        await repository.InitializeAsync();
+
+        var jobId = await repository.BeginJobAsync(TradeDate, 1, Now(), CancellationToken.None);
+        var holding = new CustomerHolding(
+            TradeDate, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
+            null, 8, @"C:\DATA\親帶績效.XLSX|王保仁-A|4|5285",
+            CurrentPriceIssue: "儲存格為 #N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）",
+            EntryAveragePrice: null,
+            EntryAveragePriceIssue: "儲存格為空白，無法讀取進場價/平均價");
+
+        var entryAlert = new StrategyAlert(
+            TradeDate, AlertKind.EntryAveragePriceInvalid, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
+            null, 8, null, null, null, null, null, false, false, false,
+            "進場價/平均價無效，無法判斷：儲存格為空白，無法讀取進場價/平均價。",
+            MarketType.Otc, null, null, "TPEx", Now(),
+            EntryAveragePrice: null, EntryAveragePriceIssue: "儲存格為空白，無法讀取進場價/平均價", CurrentPriceIssue: null);
+        var currentAlert = new StrategyAlert(
+            TradeDate, AlertKind.CurrentPriceInvalid, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
+            null, 8, null, null, null, null, null, false, false, false,
+            "現價無效，無法判斷：儲存格為 #N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）。",
+            MarketType.Otc, null, null, "TPEx", Now(),
+            EntryAveragePrice: null, EntryAveragePriceIssue: null, CurrentPriceIssue: "儲存格為 #N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）");
+
+        await repository.SaveHoldingsAndAlertsAsync(jobId, TradeDate, @"C:\Data\親帶績效.xlsx", [holding], [entryAlert, currentAlert], CancellationToken.None);
+
+        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await connection.OpenAsync();
+        Assert.Equal(2, Convert.ToInt32(await ScalarAsync(connection, "SELECT COUNT(*) FROM StrategyAlerts WHERE StockCode = '5285';")));
+        Assert.Equal(
+            "儲存格為空白，無法讀取進場價/平均價",
+            await ScalarAsync(connection, "SELECT EntryAveragePriceIssue FROM StrategyAlerts WHERE StockCode = '5285' AND AlertKind = 4;"));
+        Assert.Equal(
+            "儲存格為 #N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）",
+            await ScalarAsync(connection, "SELECT CurrentPriceIssue FROM StrategyAlerts WHERE StockCode = '5285' AND AlertKind = 3;"));
+
+        // CustomerHoldingSnapshots 只有一列，但兩個 Issue 欄位必須各自保存、互不覆蓋。
+        Assert.Equal(
+            "儲存格為空白，無法讀取進場價/平均價",
+            await ScalarAsync(connection, "SELECT EntryAveragePriceIssue FROM CustomerHoldingSnapshots WHERE StockCode = '5285';"));
+        Assert.Equal(
+            "儲存格為 #N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）",
+            await ScalarAsync(connection, "SELECT CurrentPriceIssue FROM CustomerHoldingSnapshots WHERE StockCode = '5285';"));
+    }
+
+    [Fact]
+    public async Task 同一天重跑不會產生重複的持股快照或通知()
+    {
+        var repository = new SqliteYiHeLeeRepository(_databasePath, new FixedClock());
+        await repository.InitializeAsync();
+
+        var holding = new CustomerHolding(
+            TradeDate, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
+            520m, 8, @"C:\DATA\親帶績效.XLSX|王保仁-A|4|5285", null, 501m, null);
+        var alert = new StrategyAlert(
+            TradeDate, AlertKind.MovingAverageTriggered, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
+            520m, 8, 480m, 490m, 480m, 480m, 600m, true, true, false,
+            "進場價/平均價與現價已同時大於或等於：5 日均價、20 日均價",
+            MarketType.Otc, null, null, "TPEx", Now(),
+            EntryAveragePrice: 501m, EntryAveragePriceIssue: null, CurrentPriceIssue: null);
+
+        var jobId1 = await repository.BeginJobAsync(TradeDate, 1, Now(), CancellationToken.None);
+        await repository.SaveHoldingsAndAlertsAsync(jobId1, TradeDate, @"C:\Data\親帶績效.xlsx", [holding], [alert], CancellationToken.None);
+        var jobId2 = await repository.BeginJobAsync(TradeDate, 2, Now(), CancellationToken.None);
+        await repository.SaveHoldingsAndAlertsAsync(jobId2, TradeDate, @"C:\Data\親帶績效.xlsx", [holding], [alert], CancellationToken.None);
+
+        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await connection.OpenAsync();
+        Assert.Equal(1, Convert.ToInt32(await ScalarAsync(connection, "SELECT COUNT(*) FROM CustomerHoldingSnapshots WHERE StockCode = '5285';")));
+        Assert.Equal(1, Convert.ToInt32(await ScalarAsync(connection, "SELECT COUNT(*) FROM StrategyAlerts WHERE StockCode = '5285';")));
     }
 
     /// <summary>建立已完成 EntryAveragePrice→CurrentPrice 遷移、但尚無 CurrentPriceIssue 欄位的資料庫並塞一筆資料。</summary>

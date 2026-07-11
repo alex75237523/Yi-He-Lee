@@ -232,11 +232,16 @@ public sealed class DailyJobService
             await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, movingAverageSnapshots, cancellationToken).ConfigureAwait(false);
 
             var completedAt = _clock.GetTaipeiNow();
-            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價；比較基準：Excel「現價」欄位（DDE）。";
+            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價；比較基準：Excel「進場價/平均價」與「現價」須同時達標（雙價格判斷）。";
             var invalidCurrentPriceCount = alerts.Count(x => x.AlertKind == AlertKind.CurrentPriceInvalid);
             if (invalidCurrentPriceCount > 0)
             {
                 successMessage += $" 提醒：{invalidCurrentPriceCount} 筆持股的現價無法判讀（DDE 可能未連線），詳見「現價異常」清單。";
+            }
+            var invalidEntryAveragePriceCount = alerts.Count(x => x.AlertKind == AlertKind.EntryAveragePriceInvalid);
+            if (invalidEntryAveragePriceCount > 0)
+            {
+                successMessage += $" 提醒：{invalidEntryAveragePriceCount} 筆持股的進場價/平均價無法判讀，詳見「進場價／平均價異常」清單。";
             }
             if (cnyesReminder is not null)
             {

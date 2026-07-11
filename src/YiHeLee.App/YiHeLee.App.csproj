@@ -29,4 +29,7 @@
   <Target Name="WarnWhenOfficePiaFilesAreMissing" BeforeTargets="Build" Condition="!Exists('$(Office16PiaDirectory)\office.dll') Or !Exists('$(Office16PiaDirectory)\Microsoft.Vbe.Interop.dll')">
     <Warning Text="Office 16 interop dependencies were not found at '$(Office16PiaDirectory)'. Excel automation may fail at runtime with a missing 'office' assembly unless office.dll and Microsoft.Vbe.Interop.dll are copied next to the app." />
   </Target>
+  <ItemGroup>
+    <InternalsVisibleTo Include="YiHeLee.Tests" />
+  </ItemGroup>
 </Project>

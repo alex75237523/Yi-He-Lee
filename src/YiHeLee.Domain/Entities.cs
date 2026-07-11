@@ -42,6 +42,9 @@ public sealed record CrawlBatch(
 /// 從 Excel 客戶頁籤讀取的持股。<see cref="CurrentPrice"/> 為表頭「現價」欄位的值，來源是外部 DDE 連結，
 /// 可能出現 #N/A 等錯誤值、空白、0 或文字；無法判讀時 <see cref="CurrentPrice"/> 為 null，
 /// 並以 <see cref="CurrentPriceIssue"/> 記錄原因，策略層必須轉為「現價異常」通知，不得靜默略過。
+/// <see cref="EntryAveragePrice"/> 為表頭「進場價/平均價」欄位的值，與「現價」是完全獨立的欄位，
+/// 不是 DDE 欄位，禁止與「現價」混用、互相代替或共用同一個 Issue／數值；無法判讀時為 null，
+/// 原因記錄於 <see cref="EntryAveragePriceIssue"/>。
 /// </summary>
 public sealed record CustomerHolding(
     DateOnly SnapshotDate,
@@ -54,10 +57,17 @@ public sealed record CustomerHolding(
     decimal? CurrentPrice,
     decimal? Quantity,
     string HoldingKey,
-    string? CurrentPriceIssue = null);
+    string? CurrentPriceIssue = null,
+    decimal? EntryAveragePrice = null,
+    string? EntryAveragePriceIssue = null);
 
 /// <summary>均線策略通知結果。<see cref="CurrentPrice"/> 為判斷當下 Excel「現價」欄位（DDE）的值；
-/// AlertKind 為 CurrentPriceInvalid 時必為 null，原因寫在 TriggerDescription。
+/// AlertKind 為 CurrentPriceInvalid 時必為 null，原因寫在 <see cref="CurrentPriceIssue"/> 與 TriggerDescription。
+/// <see cref="EntryAveragePrice"/>／<see cref="EntryAveragePriceIssue"/> 為表頭「進場價/平均價」欄位（非 DDE），
+/// 與現價完全獨立，AlertKind 為 EntryAveragePriceInvalid 時 <see cref="EntryAveragePrice"/> 必為 null；
+/// 兩組價格欄位禁止共用同一個 Issue 或同一個數值。
+/// <see cref="TriggeredMa5"/>／<see cref="TriggeredMa20"/>／<see cref="TriggeredMa120"/> 代表「進場價/平均價與現價
+/// 兩者皆大於或等於」該均價（雙價格同時達標），不是只看其中一個價格。
 /// <see cref="DiagnosticStatus"/>／<see cref="MissingReason"/>／<see cref="AvailableTradingDayCount"/>／
 /// <see cref="LatestAvailableTradeDate"/> 為 Excel 輸出診斷欄位（計算狀態、缺少原因、有效交易日數、最新收盤日期），
 /// 不得讓使用者只看到空白卻不知道原因。</summary>
@@ -89,7 +99,10 @@ public sealed record StrategyAlert(
     string? DiagnosticStatus = null,
     string? MissingReason = null,
     int AvailableTradingDayCount = 0,
-    DateOnly? LatestAvailableTradeDate = null);
+    DateOnly? LatestAvailableTradeDate = null,
+    decimal? EntryAveragePrice = null,
+    string? EntryAveragePriceIssue = null,
+    string? CurrentPriceIssue = null);
 
 /// <summary>
 /// TWSE／TPEx 官方來源單一股票、單一交易日的原始收盤價（Provider 輸出的來源 DTO）。
@@ -190,6 +203,10 @@ public sealed record HistoricalBackfillStockException(
 /// <see cref="OverallResult"/> 顯示為「現價無效，暫時無法判斷」，不得影響
 /// <see cref="ClosePrice"/>／<see cref="MovingAverage5"/>／<see cref="MovingAverage20"/>／
 /// <see cref="MovingAverage60"/>／<see cref="MovingAverage120"/> 等已由官方收盤價算出的欄位。
+/// <see cref="EntryAveragePrice"/>／<see cref="EntryAveragePriceStatus"/>／<see cref="EntryAveragePriceIssue"/>
+/// 為表頭「進場價/平均價」欄位（非 DDE），與現價完全獨立，禁止與現價混用、共用同一個 Issue 或數值。
+/// <see cref="Ma5Match"/>／<see cref="Ma20Match"/>／<see cref="Ma120Match"/> 代表「進場價/平均價與現價兩者皆
+/// 大於或等於」該均價。
 /// <see cref="StrategyAlert"/> 只負責中央通知與需要提醒使用者的子集合，Excel 完整結果一律以本型別為準。
 /// </summary>
 public sealed record HoldingStrategyResult(
@@ -201,6 +218,9 @@ public sealed record HoldingStrategyResult(
     string ResolvedStockCode,
     string StockName,
     MarketType? MarketType,
+    decimal? EntryAveragePrice,
+    string EntryAveragePriceStatus,
+    string? EntryAveragePriceIssue,
     decimal? CurrentPrice,
     string CurrentPriceStatus,
     string? CurrentPriceIssue,

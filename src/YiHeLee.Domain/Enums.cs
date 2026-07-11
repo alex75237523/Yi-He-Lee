@@ -41,7 +41,14 @@ public enum AlertKind
     TechnicalIndicatorMissing = 2,
 
     /// <summary>Excel「現價」欄位（外部 DDE 連結）為錯誤值、空白、0 或無法解析，無法進行均線判斷。</summary>
-    CurrentPriceInvalid = 3
+    CurrentPriceInvalid = 3,
+
+    /// <summary>
+    /// Excel「進場價/平均價」欄位為 Excel 錯誤值、空白、0、負數或無法解析，無法進行均線判斷。
+    /// 此欄位不是 DDE 欄位，異常原因與「現價」（<see cref="CurrentPriceInvalid"/>）分開判斷、分開顯示，
+    /// 不得共用同一個原因或互相代替。
+    /// </summary>
+    EntryAveragePriceInvalid = 4
 }
 
 /// <summary>均線計算狀態：交易日數不足時不得硬算，也不得產生該均線通知。</summary>

@@ -38,6 +38,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private HistoricalPriceForm? _historicalPriceForm;
     private bool _isExiting;
 
+    // 最後一次狀態，供主視窗建立（或重建）時補上，避免顯示過時的「初始化中」。
+    private string _lastStatusMessage = "初始化中";
+    private int _lastStatusPercent;
+
     public TrayApplicationContext(
         string[] args,
         AppPaths paths,
@@ -130,15 +134,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _userInteraction.Succeeded += ShowSuccessCenter;
         _userInteraction.Failed += ShowFailureCenter;
 
-        _scheduleCoordinator.Start();
-        SetStatus("等待每日台北時間 13:35，自動執行中", 0);
-
         var forceSettings = args.Any(x => string.Equals(x, "--settings", StringComparison.OrdinalIgnoreCase));
         _dispatcherForm.BeginInvoke(new Action(async () =>
         {
             var settings = await _settingsStore.LoadAsync(_lifetimeCts.Token);
             // 依 config 旗標同步系統匣選單「歷史收盤價」項目的顯示狀態。
             _historicalPriceItem.Visible = settings.ShowHistoricalPriceButton;
+
+            // 依設定啟動排程。
+            if (settings.EnableDailySchedule)
+            {
+                await _scheduleCoordinator.StartAsync();
+                SetStatus("等待每日台北時間 13:35，自動執行中", 0);
+            }
+            else
+            {
+                SetStatus("每日排程已停用，可按「立即執行」手動執行", 0);
+            }
             if (forceSettings || string.IsNullOrWhiteSpace(settings.WorkbookPath))
             {
                 await ShowMainWindowAsync();
@@ -224,6 +236,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 OpenConfiguredExcelAsync,
                 ShowHistoricalPriceForm,
                 () => OpenFolder(_paths.LogDirectory));
+
+            // 主視窗可能在狀態已更新後才建立，補上最後一次狀態，避免顯示過時的「初始化中」。
+            _mainForm.UpdateStatus(_lastStatusMessage, _lastStatusPercent);
         }
 
         _mainForm.ShowAndActivate();
@@ -332,6 +347,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void SetStatus(string message, int percentComplete)
     {
         var oneLine = message.ReplaceLineEndings(" ").Trim();
+        _lastStatusMessage = oneLine;
+        _lastStatusPercent = percentComplete;
         _statusItem.Text = oneLine.Length > 80 ? $"狀態：{oneLine[..77]}..." : $"狀態：{oneLine}";
         _notifyIcon.Text = "Yi He Lee－" + (oneLine.Length > 45 ? oneLine[..45] : oneLine);
         _mainForm?.UpdateStatus(oneLine, percentComplete);

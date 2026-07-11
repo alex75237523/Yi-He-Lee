@@ -28,7 +28,66 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
     {
         await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await ExecuteNonQueryAsync(connection, null, "PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false);
+        await MigrateEntryAveragePriceToCurrentPriceAsync(connection, cancellationToken).ConfigureAwait(false);
         await ExecuteNonQueryAsync(connection, null, SchemaSql, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 2026-07-11 需求更正：策略比較基準由「進場價／平均價」改為 Excel「現價」欄位（外部 DDE），
+    /// 舊資料庫的 EntryAveragePrice 欄位改名為 CurrentPrice 並允許 NULL（現價無效的通知列沒有價格）。
+    /// 舊列的值原樣保留（當時比較基準為進場價，僅屬歷史紀錄）。SQLite 無法直接卸除 NOT NULL，
+    /// 因此以「改名舊表→由 SchemaSql 建新表→搬移→刪舊表」方式重建。
+    /// </summary>
+    private static async Task MigrateEntryAveragePriceToCurrentPriceAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        var migrations = new (string Table, string CopySql)[]
+        {
+            ("CustomerHoldingSnapshots", """
+                INSERT INTO CustomerHoldingSnapshots
+                    (Id, JobId, SnapshotDate, WorkbookPath, SheetName, CustomerName, ExcelRow,
+                     StockCode, StockName, CurrentPrice, Quantity, HoldingKey, CreatedAt)
+                SELECT Id, JobId, SnapshotDate, WorkbookPath, SheetName, CustomerName, ExcelRow,
+                       StockCode, StockName, EntryAveragePrice, Quantity, HoldingKey, CreatedAt
+                FROM CustomerHoldingSnapshots_Legacy;
+                """),
+            ("StrategyAlerts", """
+                INSERT INTO StrategyAlerts
+                    (Id, JobId, TradeDate, AlertKind, WorkbookPath, SheetName, CustomerName, ExcelRow,
+                     StockCode, StockName, CurrentPrice, Quantity, ClosePrice,
+                     MovingAverage5, MovingAverage20, MovingAverage60, MovingAverage120,
+                     TriggeredMa5, TriggeredMa20, TriggeredMa120, TriggerDescription,
+                     MarketType, IndicatorType, SourceUrl, CreatedAt, UpdatedAt)
+                SELECT Id, JobId, TradeDate, AlertKind, WorkbookPath, SheetName, CustomerName, ExcelRow,
+                       StockCode, StockName, EntryAveragePrice, Quantity, ClosePrice,
+                       MovingAverage5, MovingAverage20, MovingAverage60, MovingAverage120,
+                       TriggeredMa5, TriggeredMa20, TriggeredMa120, TriggerDescription,
+                       MarketType, IndicatorType, SourceUrl, CreatedAt, UpdatedAt
+                FROM StrategyAlerts_Legacy;
+                """)
+        };
+
+        foreach (var (table, copySql) in migrations)
+        {
+            if (!await ColumnExistsAsync(connection, table, "EntryAveragePrice", cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            await ExecuteNonQueryAsync(connection, null, $"ALTER TABLE {table} RENAME TO {table}_Legacy;", cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, null, SchemaSql, cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, null, copySql, cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(connection, null, $"DROP TABLE {table}_Legacy;", cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<bool> ColumnExistsAsync(SqliteConnection connection, string table, string column, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM pragma_table_info($table) WHERE name = $column;";
+        command.Parameters.AddWithValue("$table", table);
+        command.Parameters.AddWithValue("$column", column);
+        var count = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return Convert.ToInt32(count, CultureInfo.InvariantCulture) > 0;
     }
 
     public async Task<Guid> BeginJobAsync(DateOnly targetDate, int attemptNumber, DateTimeOffset startedAt, CancellationToken cancellationToken)
@@ -315,13 +374,20 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
     }
 
-    public async Task<JobRunSummary?> GetLatestJobSummaryAsync(CancellationToken cancellationToken)
+    public Task<JobRunSummary?> GetLatestJobSummaryAsync(CancellationToken cancellationToken)
+        => GetLatestJobSummaryCoreAsync(targetDate: null, cancellationToken);
+
+    public Task<JobRunSummary?> GetLatestJobSummaryForDateAsync(DateOnly targetDate, CancellationToken cancellationToken)
+        => GetLatestJobSummaryCoreAsync(targetDate, cancellationToken);
+
+    private async Task<JobRunSummary?> GetLatestJobSummaryCoreAsync(DateOnly? targetDate, CancellationToken cancellationToken)
     {
         const string sql = """
             SELECT JobId, TargetDate, Status, Outcome, COALESCE(Message, ''), AttemptNumber,
                    CrawledCount, HoldingCount, AlertCount, MissingIndicatorCount,
                    TaipeiStartedAt, COALESCE(TaipeiCompletedAt, TaipeiStartedAt)
             FROM JobRuns
+            WHERE ($targetDate IS NULL OR TargetDate = $targetDate)
             ORDER BY TaipeiStartedAt DESC
             LIMIT 1;
             """;
@@ -329,6 +395,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
+        command.Parameters.AddWithValue("$targetDate", targetDate is null ? DBNull.Value : ToDate(targetDate.Value));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -423,15 +490,15 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         const string sql = """
             INSERT INTO CustomerHoldingSnapshots
                 (JobId, SnapshotDate, WorkbookPath, SheetName, CustomerName, ExcelRow,
-                 StockCode, StockName, EntryAveragePrice, Quantity, HoldingKey, CreatedAt)
+                 StockCode, StockName, CurrentPrice, Quantity, HoldingKey, CreatedAt)
             VALUES
                 ($jobId, $snapshotDate, $workbookPath, $sheetName, $customerName, $excelRow,
-                 $stockCode, $stockName, $entryPrice, $quantity, $holdingKey, $createdAt)
+                 $stockCode, $stockName, $currentPrice, $quantity, $holdingKey, $createdAt)
             ON CONFLICT(SnapshotDate, HoldingKey) DO UPDATE SET
                 JobId = excluded.JobId,
                 CustomerName = excluded.CustomerName,
                 StockName = excluded.StockName,
-                EntryAveragePrice = excluded.EntryAveragePrice,
+                CurrentPrice = excluded.CurrentPrice,
                 Quantity = excluded.Quantity,
                 CreatedAt = excluded.CreatedAt;
             """;
@@ -446,7 +513,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         command.Parameters.AddWithValue("$excelRow", holding.ExcelRow);
         command.Parameters.AddWithValue("$stockCode", holding.StockCode);
         command.Parameters.AddWithValue("$stockName", holding.StockName);
-        command.Parameters.AddWithValue("$entryPrice", holding.EntryAveragePrice);
+        command.Parameters.AddWithValue("$currentPrice", holding.CurrentPrice is null ? DBNull.Value : holding.CurrentPrice.Value);
         command.Parameters.AddWithValue("$quantity", holding.Quantity is null ? DBNull.Value : holding.Quantity.Value);
         command.Parameters.AddWithValue("$holdingKey", holding.HoldingKey);
         command.Parameters.AddWithValue("$createdAt", ToTimestamp(_clock.GetTaipeiNow()));
@@ -458,13 +525,13 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         const string sql = """
             INSERT INTO StrategyAlerts
                 (JobId, TradeDate, AlertKind, WorkbookPath, SheetName, CustomerName, ExcelRow,
-                 StockCode, StockName, EntryAveragePrice, Quantity, ClosePrice,
+                 StockCode, StockName, CurrentPrice, Quantity, ClosePrice,
                  MovingAverage5, MovingAverage20, MovingAverage60, MovingAverage120,
                  TriggeredMa5, TriggeredMa20, TriggeredMa120, TriggerDescription,
                  MarketType, IndicatorType, SourceUrl, CreatedAt, UpdatedAt)
             VALUES
                 ($jobId, $tradeDate, $alertKind, $workbookPath, $sheetName, $customerName, $excelRow,
-                 $stockCode, $stockName, $entryPrice, $quantity, $closePrice,
+                 $stockCode, $stockName, $currentPrice, $quantity, $closePrice,
                  $ma5, $ma20, $ma60, $ma120,
                  $triggeredMa5, $triggeredMa20, $triggeredMa120, $description,
                  $marketType, $indicatorType, $sourceUrl, $now, $now)
@@ -473,7 +540,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
                 AlertKind = excluded.AlertKind,
                 CustomerName = excluded.CustomerName,
                 StockName = excluded.StockName,
-                EntryAveragePrice = excluded.EntryAveragePrice,
+                CurrentPrice = excluded.CurrentPrice,
                 Quantity = excluded.Quantity,
                 ClosePrice = excluded.ClosePrice,
                 MovingAverage5 = excluded.MovingAverage5,
@@ -501,7 +568,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         command.Parameters.AddWithValue("$excelRow", alert.ExcelRow);
         command.Parameters.AddWithValue("$stockCode", alert.StockCode);
         command.Parameters.AddWithValue("$stockName", alert.StockName);
-        command.Parameters.AddWithValue("$entryPrice", alert.EntryAveragePrice);
+        command.Parameters.AddWithValue("$currentPrice", alert.CurrentPrice is null ? DBNull.Value : alert.CurrentPrice.Value);
         command.Parameters.AddWithValue("$quantity", alert.Quantity is null ? DBNull.Value : alert.Quantity.Value);
         command.Parameters.AddWithValue("$closePrice", alert.ClosePrice is null ? DBNull.Value : alert.ClosePrice.Value);
         command.Parameters.AddWithValue("$ma5", alert.MovingAverage5 is null ? DBNull.Value : alert.MovingAverage5.Value);
@@ -612,7 +679,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
             ExcelRow INTEGER NOT NULL,
             StockCode TEXT NOT NULL,
             StockName TEXT NOT NULL,
-            EntryAveragePrice NUMERIC NOT NULL,
+            CurrentPrice NUMERIC NULL,
             Quantity NUMERIC NULL,
             HoldingKey TEXT NOT NULL,
             CreatedAt TEXT NOT NULL,
@@ -630,7 +697,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
             ExcelRow INTEGER NOT NULL,
             StockCode TEXT NOT NULL,
             StockName TEXT NOT NULL,
-            EntryAveragePrice NUMERIC NOT NULL,
+            CurrentPrice NUMERIC NULL,
             Quantity NUMERIC NULL,
             ClosePrice NUMERIC NULL,
             MovingAverage5 NUMERIC NULL,

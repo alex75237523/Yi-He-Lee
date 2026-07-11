@@ -29,8 +29,9 @@
 | `CreateOutputWorksheetIfMissing` | `true` | 找不到輸出頁籤時自動建立。 |
 | `ShowExcelSafetyPrompt` | `true` | 操作 Excel 前在「操作」頁顯示防呆確認（開始／取消）。 |
 | `AutoOpenWorkbookIfClosed` | `true` | 找不到已開啟的活頁簿時，自動用 Excel 開啟該檔案。 |
-| `ShowHistoricalPriceButton` | `false` | 是否顯示「歷史收盤價」按鈕與系統匣選單項目。**只能改檔案，設定頁籤沒有此選項**。 |
-| `ShowStatusText` | `false` | 「操作」頁是否顯示執行中的文字狀態（會透露目前步驟）；預設只顯示進度條。**只能改檔案**。註：MA120 歷史回補的逐日細節進度不受此旗標影響，一律顯示於進度條下方。 |
+| `EnableDailySchedule` | `true` | 每日 13:35 自動執行排程是否啟用；設為 `false` 時排程停用，使用者仍可手動點選「立即執行」。 |
+| `ShowHistoricalPriceButton` | `true` | 是否顯示「歷史收盤價」按鈕與系統匣選單項目；設為 `false` 可隱藏。**只能改檔案，設定頁籤沒有此選項**。 |
+| `ShowStatusText` | `true` | 「操作」頁是否顯示執行中的文字狀態（目前執行到哪個步驟）；設為 `false` 時只顯示進度條。**只能改檔案**。註：MA120 歷史回補的逐日細節進度不受此旗標影響，一律顯示於進度條下方。 |
 | `ShowSourceSettings` | `false` | 設定頁是否顯示「資料來源網址」頁籤（鉅亨網來源清單）。預設隱藏避免誤改；隱藏時來源設定仍原樣保留、正常運作。**只能改檔案**。 |
 | `ExcludedHoldingFillColors` | `#92D050` | 股名儲存格套用這些填滿色 = 人工標記「不判斷」，整列跳過。 |
 | `ExcludedHoldingTextMarkers` | `不判斷`、`已出場` 等 | 持股列出現這些文字時整列跳過。 |
@@ -54,8 +55,9 @@
 | 欄位 | 預設值 | 說明 |
 |---|---|---|
 | `TwseDailyCloseUrlTemplate` | TWSE 官方端點 | 上市每日收盤行情網址樣板，`{0}` 置換為 `yyyyMMdd`。 |
-| `TpexDailyCloseUrlTemplate` | TPEx 官方端點 | 上櫃每日收盤行情網址樣板，`{0}` 置換為民國年/月/日。 |
-| `EmergingDailyCloseUrl` | TPEx OpenAPI | 興櫃當日行情（即時快照，無法指定歷史日期）。 |
+| `TpexDailyCloseUrlTemplate` | TPEx 官方端點 | 上櫃每日收盤行情網址樣板，`{0}` 置換為民國年/月/日，例如 `115/07/08`。 |
+| `EmergingDailyCloseUrl` | TPEx OpenAPI | 興櫃當日行情（即時快照，無日期參數）。 |
+| `EmergingHistoricalUrlTemplate` | TPEx 官方端點 | 興櫃個股歷史行情網址樣板，`{0}` 置換為民國年月（例如 `115/07`），`{1}` 置換為股票代碼；每日自動回補只針對 Excel 持股中的興櫃股票使用。 |
 | `HttpTimeoutSeconds` | `30` | 單次 HTTP 請求逾時秒數。 |
 | `HttpShortRetryCount` | `3` | HTTP 失敗短暫重試次數。 |
 | `HttpShortRetryDelaySeconds` | `5` | HTTP 重試等待秒數。 |

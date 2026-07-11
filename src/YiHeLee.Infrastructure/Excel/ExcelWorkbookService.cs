@@ -30,10 +30,11 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
     public Task<IReadOnlyList<CustomerHolding>> ReadHoldingsAsync(
         AppSettings settings,
         DateOnly targetDate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? reportProgress = null)
         => ExecuteWithExcelRetryAsync(
             settings,
-            () => ReadHoldingsCore(settings, targetDate),
+            () => ReadHoldingsCore(settings, targetDate, reportProgress),
             "讀取 Excel 持股",
             cancellationToken);
 
@@ -52,7 +53,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             "寫入 Excel 策略結果",
             cancellationToken);
 
-    private IReadOnlyList<CustomerHolding> ReadHoldingsCore(AppSettings settings, DateOnly targetDate)
+    private IReadOnlyList<CustomerHolding> ReadHoldingsCore(AppSettings settings, DateOnly targetDate, Action<string>? reportProgress)
     {
         ExcelInterop.Workbook? workbook = null;
         ExcelInterop.Application? application = null;
@@ -69,7 +70,8 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var holdings = new List<CustomerHolding>();
 
-            for (var sheetIndex = 1; sheetIndex <= worksheets.Count; sheetIndex++)
+            var totalSheets = worksheets.Count;
+            for (var sheetIndex = 1; sheetIndex <= totalSheets; sheetIndex++)
             {
                 ExcelInterop.Worksheet? worksheet = null;
                 try
@@ -77,10 +79,15 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                     worksheet = (ExcelInterop.Worksheet)worksheets[sheetIndex];
                     if (excluded.Contains(worksheet.Name))
                     {
+                        reportProgress?.Invoke($"正在讀取 Excel 客戶頁籤：略過「{worksheet.Name}」（{sheetIndex}/{totalSheets}）。");
                         continue;
                     }
 
-                    holdings.AddRange(ReadHoldingsFromWorksheet(workbook.FullName, worksheet, targetDate, settings));
+                    reportProgress?.Invoke($"正在讀取 Excel 客戶頁籤：「{worksheet.Name}」（{sheetIndex}/{totalSheets}）……");
+                    var sheetHoldings = ReadHoldingsFromWorksheet(workbook.FullName, worksheet, targetDate, settings);
+                    holdings.AddRange(sheetHoldings);
+                    var customerName = sheetHoldings.FirstOrDefault()?.CustomerName ?? worksheet.Name;
+                    reportProgress?.Invoke($"已讀取客戶頁籤：「{worksheet.Name}」／客戶「{customerName}」，找到 {sheetHoldings.Count} 筆持股（{sheetIndex}/{totalSheets}）。");
                 }
                 finally
                 {
@@ -88,12 +95,14 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 }
             }
 
-            return holdings
+            var distinctHoldings = holdings
                 .GroupBy(x => x.HoldingKey, StringComparer.OrdinalIgnoreCase)
                 .Select(x => x.First())
                 .OrderBy(x => x.SheetName, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(x => x.ExcelRow)
                 .ToArray();
+            reportProgress?.Invoke($"Excel 客戶頁籤讀取完成：共 {distinctHoldings.Length} 筆有效持股。");
+            return distinctHoldings;
         }
         finally
         {
@@ -157,11 +166,12 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                         continue;
                     }
 
-                    if (!TryGetDecimal(accessor.GetValue(relativeRow, header.EntryPriceColumn), out var entryPrice)
-                        || entryPrice <= 0)
+                    // 「現價」欄位串接外部 DDE，不能假設一定是正常數字；無法判讀時不得靜默略過，
+                    // 必須帶著原因回傳，由策略層轉成「現價異常」通知告知使用者。
+                    var currentPrice = CurrentPriceCellParser.Parse(accessor.GetValue(relativeRow, header.CurrentPriceColumn));
+                    if (!currentPrice.IsValid)
                     {
-                        _logger.Warning($"頁籤「{worksheet.Name}」第 {absoluteRow} 列股票 {stockCode} 的進場價／平均價無效，已略過。");
-                        continue;
+                        _logger.Warning($"頁籤「{worksheet.Name}」第 {absoluteRow} 列股票 {stockCode} 的現價無法判讀：{currentPrice.Issue}。");
                     }
 
                     decimal? quantity = null;
@@ -185,9 +195,10 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                         absoluteRow,
                         stockCode,
                         stockName,
-                        entryPrice,
+                        currentPrice.Price,
                         quantity,
-                        holdingKey));
+                        holdingKey,
+                        currentPrice.Issue));
                 }
             }
 
@@ -231,7 +242,12 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             }
 
             var ordered = alerts
-                .OrderBy(x => x.AlertKind == AlertKind.MovingAverageTriggered ? 0 : 1)
+                .OrderBy(x => x.AlertKind switch
+                {
+                    AlertKind.MovingAverageTriggered => 0,
+                    AlertKind.CurrentPriceInvalid => 1,
+                    _ => 2
+                })
                 .ThenBy(x => x.CustomerName, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(x => x.StockCode, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
@@ -320,7 +336,8 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             SetColumnWidth(worksheet, "F", 11);
             SetColumnWidth(worksheet, "G", 12);
 
-            var firstMissingIndex = alerts.ToList().FindIndex(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing);
+            // 現價異常與無技術資料的列一律以底色標示，提醒使用者這些持股本次未完成判斷。
+            var firstMissingIndex = alerts.ToList().FindIndex(x => x.AlertKind != AlertKind.MovingAverageTriggered);
             if (firstMissingIndex >= 0)
             {
                 var startRow = firstMissingIndex + 2;
@@ -544,7 +561,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         {
             int? code = null;
             int? name = null;
-            int? entry = null;
+            int? current = null;
             int? quantity = null;
             var containsExitPrice = false;
 
@@ -553,20 +570,19 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 var text = NormalizeHeader(accessor.GetString(row, column));
                 if (text is "代號" or "代碼" or "股票代碼") code = column;
                 if (text is "股名" or "名稱" or "股票名稱") name = column;
-                if (text.Contains("進場價", StringComparison.Ordinal)
-                    && text.Contains("平均價", StringComparison.Ordinal)) entry = column;
+                if (text == "現價") current = column;
                 if (text == "張數") quantity = column;
                 if (text.Contains("出場價", StringComparison.Ordinal)) containsExitPrice = true;
             }
 
             // 已出場表頭也要記錄為區塊邊界，避免上一個持股區塊一路掃描到已出場資料。
-            if (code is not null && name is not null && (entry is not null || containsExitPrice))
+            if (code is not null && name is not null && (current is not null || containsExitPrice))
             {
                 candidates.Add(new TableHeaderCandidate(
                     row,
                     code.Value,
                     name.Value,
-                    entry,
+                    current,
                     quantity,
                     containsExitPrice));
             }
@@ -576,7 +592,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         for (var index = 0; index < candidates.Count; index++)
         {
             var candidate = candidates[index];
-            if (candidate.ContainsExitPrice || candidate.EntryPriceColumn is null)
+            if (candidate.ContainsExitPrice || candidate.CurrentPriceColumn is null)
             {
                 continue;
             }
@@ -589,7 +605,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 endRelativeRow,
                 candidate.CodeColumn,
                 candidate.NameColumn,
-                candidate.EntryPriceColumn.Value,
+                candidate.CurrentPriceColumn.Value,
                 candidate.QuantityColumn));
         }
 
@@ -718,7 +734,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         int RelativeRow,
         int CodeColumn,
         int NameColumn,
-        int? EntryPriceColumn,
+        int? CurrentPriceColumn,
         int? QuantityColumn,
         bool ContainsExitPrice);
 
@@ -727,7 +743,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         int EndRelativeRow,
         int CodeColumn,
         int NameColumn,
-        int EntryPriceColumn,
+        int CurrentPriceColumn,
         int? QuantityColumn);
 
     private sealed class CellValueAccessor

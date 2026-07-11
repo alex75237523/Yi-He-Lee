@@ -44,14 +44,16 @@ internal sealed partial class MainForm
 
     private void RenderSuccessContent(JobRunSummary summary)
     {
+        var invalidCurrentPriceCount = summary.Alerts.Count(x => x.AlertKind == AlertKind.CurrentPriceInvalid);
         AddResultHeader(
             "Yi He Lee－每日均價判斷完成",
-            $"資料日期：{summary.TargetDate:yyyy-MM-dd}　符合條件：{summary.AlertCount} 筆　無技術資料：{summary.MissingIndicatorCount} 筆",
+            $"資料日期：{summary.TargetDate:yyyy-MM-dd}　符合條件：{summary.AlertCount} 筆　無技術資料：{summary.MissingIndicatorCount} 筆　現價異常：{invalidCurrentPriceCount} 筆",
             Color.DarkGreen);
         AddResultFooter(summary.TargetDate, "開啟 Excel", _openExcelAction);
 
         var tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(12, 6) };
         tabs.TabPages.Add(BuildTriggeredTab(summary.Alerts.Where(x => x.AlertKind == AlertKind.MovingAverageTriggered).ToArray()));
+        tabs.TabPages.Add(BuildCurrentPriceInvalidTab(summary.Alerts.Where(x => x.AlertKind == AlertKind.CurrentPriceInvalid).ToArray()));
         tabs.TabPages.Add(BuildMissingTab(summary.Alerts.Where(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing).ToArray()));
         _resultsTab.Controls.Add(tabs);
         tabs.BringToFront();
@@ -184,7 +186,7 @@ internal sealed partial class MainForm
         {
             tab.Controls.Add(new Label
             {
-                Text = "今日沒有任何客戶股票符合 5 日、20 日或 120 日均價 <= 進場價／平均價。",
+                Text = "今日沒有任何客戶股票符合 5 日、20 日或 120 日均價 <= 現價。",
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Font = new Font("Microsoft JhengHei UI", 13F, FontStyle.Bold),
@@ -197,7 +199,7 @@ internal sealed partial class MainForm
         AddTextColumn(grid, "頁籤", 140);
         AddTextColumn(grid, "代碼", 85);
         AddTextColumn(grid, "股票", 130);
-        AddTextColumn(grid, "進場價/平均價", 115);
+        AddTextColumn(grid, "現價", 95);
         AddTextColumn(grid, "收盤價", 90);
         AddTextColumn(grid, "5日均價", 90);
         AddTextColumn(grid, "20日均價", 90);
@@ -210,7 +212,7 @@ internal sealed partial class MainForm
                 alert.SheetName,
                 alert.StockCode,
                 alert.StockName,
-                FormatDecimal(alert.EntryAveragePrice),
+                FormatCurrentPrice(alert.CurrentPrice),
                 FormatDecimal(alert.ClosePrice),
                 FormatMa(alert.MovingAverage5),
                 FormatMa(alert.MovingAverage20),
@@ -242,7 +244,7 @@ internal sealed partial class MainForm
         AddTextColumn(grid, "原始列", 70);
         AddTextColumn(grid, "代碼", 90);
         AddTextColumn(grid, "股票", 140);
-        AddTextColumn(grid, "進場價/平均價", 120);
+        AddTextColumn(grid, "現價", 95);
         AddTextColumn(grid, "原因", 420, DataGridViewAutoSizeColumnMode.Fill);
         foreach (var alert in alerts)
         {
@@ -251,9 +253,45 @@ internal sealed partial class MainForm
                 alert.ExcelRow,
                 alert.StockCode,
                 alert.StockName,
-                FormatDecimal(alert.EntryAveragePrice),
+                FormatCurrentPrice(alert.CurrentPrice),
                 alert.TriggerDescription);
             grid.Rows[index].DefaultCellStyle.BackColor = Color.LightYellow;
+        }
+
+        tab.Controls.Add(grid);
+        return tab;
+    }
+
+    /// <summary>「現價」欄位串接外部 DDE，無法判讀（錯誤值、空白、0、文字）的持股集中在此頁籤告知使用者。</summary>
+    private static TabPage BuildCurrentPriceInvalidTab(IReadOnlyList<StrategyAlert> alerts)
+    {
+        var tab = new TabPage($"現價異常（{alerts.Count}）");
+        if (alerts.Count == 0)
+        {
+            tab.Controls.Add(new Label
+            {
+                Text = "所有持股的「現價」欄位（DDE）都能正常判讀。",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter
+            });
+            return tab;
+        }
+
+        var grid = CreateGrid();
+        AddTextColumn(grid, "頁籤", 150);
+        AddTextColumn(grid, "原始列", 70);
+        AddTextColumn(grid, "代碼", 90);
+        AddTextColumn(grid, "股票", 140);
+        AddTextColumn(grid, "原因", 480, DataGridViewAutoSizeColumnMode.Fill);
+        foreach (var alert in alerts)
+        {
+            var index = grid.Rows.Add(
+                alert.SheetName,
+                alert.ExcelRow,
+                alert.StockCode,
+                alert.StockName,
+                alert.TriggerDescription);
+            grid.Rows[index].DefaultCellStyle.BackColor = Color.MistyRose;
         }
 
         tab.Controls.Add(grid);
@@ -296,10 +334,13 @@ internal sealed partial class MainForm
         if (alert.TriggeredMa5) values.Add("5 日均價");
         if (alert.TriggeredMa20) values.Add("20 日均價");
         if (alert.TriggeredMa120) values.Add("120 日均價");
-        return string.Join("、", values) + " <= 進場價/平均價";
+        return string.Join("、", values) + " <= 現價";
     }
 
     private static string FormatDecimal(decimal? value) => value?.ToString("0.##") ?? string.Empty;
+
+    // 現價來自外部 DDE，無法判讀時必須顯示文字，不得顯示空白或0，避免使用者誤以為現價就是0。
+    private static string FormatCurrentPrice(decimal? value) => value?.ToString("0.##") ?? "無效（DDE）";
 
     // 均線資料不足時必須顯示文字，不得顯示空白或0，避免使用者誤判為尚未抓到資料以外的狀況。
     private static string FormatMa(decimal? value) => value?.ToString("0.##") ?? "尚未抓到資料";

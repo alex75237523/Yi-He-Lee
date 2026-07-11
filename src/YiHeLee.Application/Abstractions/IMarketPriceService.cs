@@ -26,7 +26,8 @@ public interface IMarketPriceService
         DateOnly targetDate,
         OfficialMarketDataSettings settings,
         CancellationToken cancellationToken,
-        Action<string>? reportProgress = null);
+        Action<string>? reportProgress = null,
+        IReadOnlyCollection<string>? emergingStockCodes = null);
 
     /// <summary>
     /// 抓取並保存單一市場、單一交易日期的官方收盤價（一個抓取工作＝一個市場＋一個交易日）。

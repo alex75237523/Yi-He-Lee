@@ -9,8 +9,10 @@ namespace YiHeLee.Application.Services;
 public sealed class StrategyEvaluationService
 {
     /// <summary>
-    /// 依需求逐項判斷 MA5、MA20、MA120 是否小於或等於進場價／平均價；任一條件成立即產生通知。
+    /// 依需求逐項判斷 MA5、MA20、MA120 是否小於或等於 Excel「現價」欄位（外部 DDE）；任一條件成立即產生通知。
     /// MA60 僅保存與顯示，不參與觸發。任一均線因交易日數不足而為 null 時，該項不得觸發、也不得硬算。
+    /// 現價因 DDE 錯誤值、空白、0 或無法解析而無效時，必須產生「現價異常」通知告知使用者，不得靜默略過，
+    /// 也不得以任何其他價格（收盤價、昨日現價）代替判斷。
     /// </summary>
     public IReadOnlyList<StrategyAlert> Evaluate(
         DateOnly tradeDate,
@@ -30,6 +32,38 @@ public sealed class StrategyEvaluationService
             var code = NormalizeStockCode(holding.StockCode);
             MarketType? marketType = marketTypesByStockCode.TryGetValue(code, out var mt) ? mt : null;
             var sourceProvider = marketType is null ? null : ToSourceProviderText(marketType.Value);
+            byCode.TryGetValue(code, out var maForOutput);
+
+            if (holding.CurrentPrice is not decimal currentPrice)
+            {
+                // MA5／MA20／MA60／MA120 是依 TWSE／TPEx 官方收盤價自行計算，與 Excel「現價」欄位（DDE）無關；
+                // 現價異常只代表無法判斷是否觸發，均價本身若已算出仍必須列在「每日五日均價策略」頁籤，不得因此留白。
+                var issue = string.IsNullOrWhiteSpace(holding.CurrentPriceIssue) ? "原因不明" : holding.CurrentPriceIssue;
+                result.Add(new StrategyAlert(
+                    tradeDate,
+                    AlertKind.CurrentPriceInvalid,
+                    holding.WorkbookPath,
+                    holding.SheetName,
+                    holding.CustomerName,
+                    holding.ExcelRow,
+                    holding.StockCode,
+                    holding.StockName,
+                    null,
+                    holding.Quantity,
+                    maForOutput?.ClosePrice,
+                    maForOutput?.MovingAverage5,
+                    maForOutput?.MovingAverage20,
+                    maForOutput?.MovingAverage60,
+                    maForOutput?.MovingAverage120,
+                    false, false, false,
+                    $"現價無效，無法判斷：{issue}。請確認看盤軟體已開啟且 DDE 連線正常後，再重新執行。",
+                    marketType,
+                    null,
+                    null,
+                    sourceProvider,
+                    calculatedAt));
+                continue;
+            }
 
             if (!byCode.TryGetValue(code, out var ma) || ma.ClosePrice is null)
             {
@@ -47,7 +81,7 @@ public sealed class StrategyEvaluationService
                     holding.ExcelRow,
                     holding.StockCode,
                     holding.StockName,
-                    holding.EntryAveragePrice,
+                    currentPrice,
                     holding.Quantity,
                     null, null, null, null, null,
                     false, false, false,
@@ -60,9 +94,9 @@ public sealed class StrategyEvaluationService
                 continue;
             }
 
-            var ma5Triggered = ma.MovingAverage5 is decimal ma5 && ma5 <= holding.EntryAveragePrice;
-            var ma20Triggered = ma.MovingAverage20 is decimal ma20 && ma20 <= holding.EntryAveragePrice;
-            var ma120Triggered = ma.MovingAverage120 is decimal ma120 && ma120 <= holding.EntryAveragePrice;
+            var ma5Triggered = ma.MovingAverage5 is decimal ma5 && ma5 <= currentPrice;
+            var ma20Triggered = ma.MovingAverage20 is decimal ma20 && ma20 <= currentPrice;
+            var ma120Triggered = ma.MovingAverage120 is decimal ma120 && ma120 <= currentPrice;
 
             if (!ma5Triggered && !ma20Triggered && !ma120Triggered)
             {
@@ -83,7 +117,7 @@ public sealed class StrategyEvaluationService
                 holding.ExcelRow,
                 holding.StockCode,
                 holding.StockName,
-                holding.EntryAveragePrice,
+                currentPrice,
                 holding.Quantity,
                 ma.ClosePrice,
                 ma.MovingAverage5,
@@ -93,7 +127,7 @@ public sealed class StrategyEvaluationService
                 ma5Triggered,
                 ma20Triggered,
                 ma120Triggered,
-                $"進場價／平均價已大於或等於：{string.Join("、", triggers)}",
+                $"現價已大於或等於：{string.Join("、", triggers)}",
                 marketType,
                 null,
                 null,

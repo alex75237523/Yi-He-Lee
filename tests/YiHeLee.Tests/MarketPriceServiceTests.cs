@@ -123,6 +123,85 @@ public sealed class MarketPriceServiceTests
     }
 
     [Fact]
+    public async Task 歷史回補要分市場檢查_上市足夠時仍會補上櫃不足資料()
+    {
+        var twse = FakeTwseProvider.EchoRequestedDate();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 3,
+            MaxBackfillLookbackCalendarDays = 10,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        repository.SavedPrices.Add(CreateSavedPrice("2330", "台積電", MarketType.Listed, Weekday.AddDays(-1)));
+        repository.SavedPrices.Add(CreateSavedPrice("2330", "台積電", MarketType.Listed, Weekday.AddDays(-2)));
+        repository.SavedPrices.Add(CreateSavedPrice("2330", "台積電", MarketType.Listed, Weekday.AddDays(-3)));
+
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None);
+
+        Assert.Empty(twse.RequestedDates);
+        Assert.Equal(3, tpex.RequestedDates.Count);
+        Assert.Equal(3, repository.SavedPrices.Count(x => x.MarketType == MarketType.Otc));
+    }
+
+    [Fact]
+    public async Task 歷史回補要補足興櫃持股不足資料()
+    {
+        var twse = FakeTwseProvider.EchoRequestedDate();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var emerging = FakeEmergingProvider.WithMatchingDate();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 3,
+            MaxBackfillLookbackCalendarDays = 10,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        foreach (var date in new[] { Weekday.AddDays(-1), Weekday.AddDays(-2), Weekday.AddDays(-3) })
+        {
+            repository.SavedPrices.Add(CreateSavedPrice("2330", "台積電", MarketType.Listed, date));
+            repository.SavedPrices.Add(CreateSavedPrice("5351", "鈺創", MarketType.Otc, date));
+        }
+
+        var service = new MarketPriceService(twse, tpex, emerging, repository, new FakeClock(Weekday), new FakeLogger());
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None, emergingStockCodes: ["4573"]);
+
+        Assert.Empty(twse.RequestedDates);
+        Assert.Empty(tpex.RequestedDates);
+        Assert.Equal(3, emerging.RequestedDates.Count);
+        Assert.Equal(3, repository.SavedPrices.Count(x => x.MarketType == MarketType.Emerging && x.StockCode == "4573"));
+    }
+
+    [Fact]
+    public async Task 歷史回補遇到DB已有收盤價時不再呼叫官方來源()
+    {
+        var twse = FakeTwseProvider.EchoRequestedDate();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var repository = new FakeMarketDataRepository();
+        var existingDate = Weekday.AddDays(-1);
+        repository.SavedPrices.Add(CreateSavedPrice("2330", "台積電", MarketType.Listed, existingDate));
+
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
+
+        var summary = await service.FetchAndSaveSingleAsync(
+            OfficialPriceJobType.HistoricalBackfill,
+            existingDate,
+            MarketType.Listed,
+            Settings,
+            CancellationToken.None);
+
+        Assert.Equal(OfficialPriceBatchStatus.Succeeded, summary.Status);
+        Assert.Equal(0, twse.CallCount);
+        Assert.Contains("DB 已保存", summary.ErrorMessage);
+    }
+
+    [Fact]
     public async Task 興櫃當日快照日期等於targetDate時單獨寫入成功()
     {
         var twse = FakeTwseProvider.WithMatchingDate();
@@ -189,6 +268,7 @@ public sealed class MarketPriceServiceTests
             RequestedDates.Add(requestedDate);
             return Task.FromResult(_factory(requestedDate));
         }
+
     }
 
     private sealed class FakeTpexProvider : ITpexMarketDataProvider
@@ -230,6 +310,13 @@ public sealed class MarketPriceServiceTests
             RequestedDates.Add(requestedDate);
             return Task.FromResult(_factory(requestedDate));
         }
+
+        public Task<OfficialPriceFetchResult> FetchHistoricalDailyCloseAsync(DateOnly requestedDate, IReadOnlyCollection<string> stockCodes, OfficialMarketDataSettings settings, CancellationToken cancellationToken)
+        {
+            CallCount++;
+            RequestedDates.Add(requestedDate);
+            return Task.FromResult(_factory(requestedDate));
+        }
     }
 
     private static OfficialPriceFetchResult Success(MarketType marketType, string provider, DateOnly requestedDate, DateOnly sourceDate)
@@ -251,6 +338,19 @@ public sealed class MarketPriceServiceTests
 
     private static OfficialPriceFetchResult Holiday(MarketType marketType, string provider, DateOnly requestedDate)
         => new(marketType, requestedDate, null, [], true, provider, $"https://example.invalid/{provider}", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+    private static OfficialStockPrice CreateSavedPrice(string code, string name, MarketType marketType, DateOnly tradeDate)
+        => new(
+            code,
+            name,
+            marketType,
+            tradeDate,
+            100m,
+            marketType == MarketType.Listed ? "TWSE" : "TPEx",
+            "https://example.invalid",
+            tradeDate,
+            Guid.NewGuid().ToString("D"),
+            DateTimeOffset.UtcNow);
 
     private sealed class FakeMarketDataRepository : IMarketDataRepository
     {
@@ -300,6 +400,18 @@ public sealed class MarketPriceServiceTests
 
         public Task<int> GetDistinctTradeDateCountAsync(DateOnly upToDate, int maxTradingDays, CancellationToken cancellationToken)
             => Task.FromResult(Math.Min(maxTradingDays, SavedPrices.Select(x => x.TradeDate).Where(d => d <= upToDate).Distinct().Count()));
+
+        public Task<int> GetDistinctTradeDateCountAsync(DateOnly upToDate, int maxTradingDays, MarketType marketType, CancellationToken cancellationToken)
+            => Task.FromResult(Math.Min(maxTradingDays, SavedPrices.Where(x => x.MarketType == marketType).Select(x => x.TradeDate).Where(d => d <= upToDate).Distinct().Count()));
+
+        public Task<int> GetDistinctTradeDateCountAsync(DateOnly upToDate, int maxTradingDays, string stockCode, CancellationToken cancellationToken)
+            => Task.FromResult(Math.Min(maxTradingDays, SavedPrices.Where(x => x.StockCode == stockCode).Select(x => x.TradeDate).Where(d => d <= upToDate).Distinct().Count()));
+
+        public Task<bool> HasDailyPricesAsync(DateOnly tradeDate, MarketType marketType, CancellationToken cancellationToken)
+            => Task.FromResult(SavedPrices.Any(x => x.TradeDate == tradeDate && x.MarketType == marketType));
+
+        public Task<bool> HasDailyPriceAsync(DateOnly tradeDate, string stockCode, CancellationToken cancellationToken)
+            => Task.FromResult(SavedPrices.Any(x => x.TradeDate == tradeDate && x.StockCode == stockCode));
 
         public Task<bool> HasSucceededBatchAsync(OfficialPriceJobType jobType, DateOnly targetDate, string sourceProvider, CancellationToken cancellationToken)
             => Task.FromResult(_succeededBatches.Contains((jobType, targetDate, sourceProvider)));

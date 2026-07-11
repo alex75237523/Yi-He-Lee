@@ -33,9 +33,8 @@ public interface ITpexMarketDataProvider
 }
 
 /// <summary>
-/// TPEx 官方興櫃股票當日行情來源。與 <see cref="ITwseMarketDataProvider"/>／<see cref="ITpexMarketDataProvider"/>
-/// 介面形狀相同，但來源端點沒有日期參數、只回報呼叫當下的即時快照；requestedDate 僅用於比對
-/// 回應內的資料日期是否等於當日，不會被組進查詢網址。
+/// TPEx 官方興櫃股票行情來源。當日使用全市場快照；歷史回補因官方只提供「個股＋月份」查詢，
+/// 需由呼叫端傳入本次真正需要補的興櫃股票代碼。
 /// </summary>
 public interface IEmergingMarketDataProvider
 {
@@ -43,6 +42,12 @@ public interface IEmergingMarketDataProvider
 
     Task<OfficialPriceFetchResult> FetchDailyCloseAsync(
         DateOnly requestedDate,
+        OfficialMarketDataSettings settings,
+        CancellationToken cancellationToken);
+
+    Task<OfficialPriceFetchResult> FetchHistoricalDailyCloseAsync(
+        DateOnly requestedDate,
+        IReadOnlyCollection<string> stockCodes,
         OfficialMarketDataSettings settings,
         CancellationToken cancellationToken);
 }

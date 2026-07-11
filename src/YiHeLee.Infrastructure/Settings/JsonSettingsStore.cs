@@ -37,10 +37,15 @@ public sealed class JsonSettingsStore : ISettingsStore
                 return defaults;
             }
 
-            await using var stream = File.OpenRead(_settingsPath);
-            var settings = await JsonSerializer.DeserializeAsync<AppSettings>(stream, _jsonOptions, cancellationToken).ConfigureAwait(false)
+            AppSettings settings;
+            await using (var stream = File.OpenRead(_settingsPath))
+            {
+                settings = await JsonSerializer.DeserializeAsync<AppSettings>(stream, _jsonOptions, cancellationToken).ConfigureAwait(false)
                            ?? AppSettings.CreateDefault();
+            }
+
             _validationService.EnsureFixedSources(settings);
+            await SaveInternalAsync(settings, cancellationToken).ConfigureAwait(false);
             return settings;
         }
         finally

@@ -38,7 +38,11 @@ public sealed record CrawlBatch(
     bool IsExplicitNoData,
     string? RawStatusText = null);
 
-/// <summary>從 Excel 客戶頁籤讀取的有效持股。</summary>
+/// <summary>
+/// 從 Excel 客戶頁籤讀取的持股。<see cref="CurrentPrice"/> 為表頭「現價」欄位的值，來源是外部 DDE 連結，
+/// 可能出現 #N/A 等錯誤值、空白、0 或文字；無法判讀時 <see cref="CurrentPrice"/> 為 null，
+/// 並以 <see cref="CurrentPriceIssue"/> 記錄原因，策略層必須轉為「現價異常」通知，不得靜默略過。
+/// </summary>
 public sealed record CustomerHolding(
     DateOnly SnapshotDate,
     string WorkbookPath,
@@ -47,11 +51,13 @@ public sealed record CustomerHolding(
     int ExcelRow,
     string StockCode,
     string StockName,
-    decimal EntryAveragePrice,
+    decimal? CurrentPrice,
     decimal? Quantity,
-    string HoldingKey);
+    string HoldingKey,
+    string? CurrentPriceIssue = null);
 
-/// <summary>均線策略通知結果。</summary>
+/// <summary>均線策略通知結果。<see cref="CurrentPrice"/> 為判斷當下 Excel「現價」欄位（DDE）的值；
+/// AlertKind 為 CurrentPriceInvalid 時必為 null，原因寫在 TriggerDescription。</summary>
 public sealed record StrategyAlert(
     DateOnly TradeDate,
     AlertKind AlertKind,
@@ -61,7 +67,7 @@ public sealed record StrategyAlert(
     int ExcelRow,
     string StockCode,
     string StockName,
-    decimal EntryAveragePrice,
+    decimal? CurrentPrice,
     decimal? Quantity,
     decimal? ClosePrice,
     decimal? MovingAverage5,

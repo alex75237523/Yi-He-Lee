@@ -11,7 +11,12 @@ public sealed class SettingsValidationServiceTests
         var settings = new AppSettings
         {
             DailyRunTime = new TimeOnly(9, 0),
-            Sources = []
+            Sources = [],
+            OfficialMarketData = new OfficialMarketDataSettings
+            {
+                TpexDailyCloseUrlTemplate = "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&d={0}&s=0,asc,0",
+                EmergingHistoricalUrlTemplate = string.Empty
+            }
         };
         var service = new SettingsValidationService();
 
@@ -20,6 +25,8 @@ public sealed class SettingsValidationServiceTests
         Assert.Equal(AppSettings.FixedDailyRunTime, settings.DailyRunTime);
         Assert.Equal(2, settings.Sources.Count(x => x.Required && x.Enabled));
         Assert.Contains("#92D050", settings.ExcludedHoldingFillColors, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("afterTrading/otc", settings.OfficialMarketData.TpexDailyCloseUrlTemplate, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("emerging/historical", settings.OfficialMarketData.EmergingHistoricalUrlTemplate, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]

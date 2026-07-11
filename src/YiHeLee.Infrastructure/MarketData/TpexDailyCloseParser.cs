@@ -68,7 +68,20 @@ public static class TpexDailyCloseParser
                 throw new RetryableJobException("TPEx 回應表格缺少 fields 欄位定義，網站結構可能已變更。");
             }
 
-            var fieldNames = fieldsElement.EnumerateArray().Select(x => x.GetString() ?? string.Empty).ToArray();
+            var totalCountIsZero = table.TryGetProperty("totalCount", out var totalCountElement)
+                && totalCountElement.TryGetInt32(out var totalCount)
+                && totalCount == 0;
+            var dataIsEmpty = !table.TryGetProperty("data", out var rawDataElement)
+                || rawDataElement.ValueKind != JsonValueKind.Array
+                || rawDataElement.GetArrayLength() == 0;
+            if (sourceDate is not null && totalCountIsZero && dataIsEmpty)
+            {
+                return new TpexDailyCloseParseResult(sourceDate, true, []);
+            }
+
+            var fieldNames = fieldsElement.EnumerateArray()
+                .Select(x => MarketDataParsingHelpers.Normalize(x.GetString()))
+                .ToArray();
             var codeIndex = Array.IndexOf(fieldNames, "代號");
             var nameIndex = Array.IndexOf(fieldNames, "名稱");
             var closeIndex = Array.IndexOf(fieldNames, "收盤");

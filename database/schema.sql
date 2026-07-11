@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS CustomerHoldingSnapshots (
     ExcelRow INTEGER NOT NULL,                      -- 原始 Excel 列號
     StockCode TEXT NOT NULL,                        -- 股票代碼
     StockName TEXT NOT NULL,                        -- 股票名稱
-    EntryAveragePrice NUMERIC NOT NULL,              -- 進場價／平均價
+    CurrentPrice NUMERIC NULL,                      -- Excel「現價」欄位（外部 DDE）；無法判讀時為 NULL
     Quantity NUMERIC NULL,                          -- 張數
     HoldingKey TEXT NOT NULL,                       -- 持股唯一識別
     CreatedAt TEXT NOT NULL,                        -- 建立時間
@@ -89,14 +89,14 @@ CREATE TABLE IF NOT EXISTS StrategyAlerts (
     Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,  -- 流水號
     JobId TEXT NOT NULL,                            -- Job ID
     TradeDate TEXT NOT NULL,                        -- 交易日期
-    AlertKind INTEGER NOT NULL,                     -- 1均線觸發／2缺少技術資料
+    AlertKind INTEGER NOT NULL,                     -- 1均線觸發／2缺少技術資料／3現價無效（DDE）
     WorkbookPath TEXT NOT NULL,                     -- Excel 完整路徑
     SheetName TEXT NOT NULL,                        -- 客戶頁籤
     CustomerName TEXT NOT NULL,                     -- 客戶姓名
     ExcelRow INTEGER NOT NULL,                      -- Excel 原始列號
     StockCode TEXT NOT NULL,                        -- 股票代碼
     StockName TEXT NOT NULL,                        -- 股票名稱
-    EntryAveragePrice NUMERIC NOT NULL,              -- 進場價／平均價
+    CurrentPrice NUMERIC NULL,                      -- 判斷當下 Excel「現價」欄位（外部 DDE）；現價無效通知列為 NULL
     Quantity NUMERIC NULL,                          -- 張數
     ClosePrice NUMERIC NULL,                        -- 收盤價
     MovingAverage5 NUMERIC NULL,                    -- 5日均價

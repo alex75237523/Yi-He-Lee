@@ -28,10 +28,17 @@ public sealed class DailyScheduleCoordinator : IAsyncDisposable
         _logger = logger;
     }
 
-    public void Start()
+    public async Task StartAsync()
     {
         if (_loopTask is not null)
         {
+            return;
+        }
+
+        var settings = await _settingsStore.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        if (!settings.EnableDailySchedule)
+        {
+            _logger.Info("每日排程已停用（使用者設定）。");
             return;
         }
 
@@ -103,14 +110,17 @@ public sealed class DailyScheduleCoordinator : IAsyncDisposable
             return;
         }
 
-        var latest = await _repository.GetLatestJobSummaryAsync(cancellationToken).ConfigureAwait(false);
-        if (latest is not null && latest.TargetDate == today && latest.Status == JobStatus.Succeeded)
+        // 必須查「今日」的最新一筆，不得查整體最新一筆：使用者手動回溯執行過去日期後，
+        // 整體最新一筆會變成過去日期，會被誤判為「今日尚未執行」而重跑今日，
+        // 並把使用者正在查看的回溯結果畫面蓋掉。
+        var latest = await _repository.GetLatestJobSummaryForDateAsync(today, cancellationToken).ConfigureAwait(false);
+        if (latest is not null)
         {
-            return;
-        }
+            if (latest.Status == JobStatus.Succeeded)
+            {
+                return;
+            }
 
-        if (latest is not null && latest.TargetDate == today)
-        {
             var nextRetryAt = latest.CompletedAt.AddMinutes(settings.RetryIntervalMinutes);
             if (now < nextRetryAt || latest.Outcome == RunOutcome.NonRetryableFailure)
             {

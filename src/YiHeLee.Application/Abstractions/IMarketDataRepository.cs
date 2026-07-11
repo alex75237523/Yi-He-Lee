@@ -55,8 +55,20 @@ public interface IMarketDataRepository
         DateOnly tradeDate,
         CancellationToken cancellationToken);
 
-    /// <summary>取得指定日期以前，資料庫已保存的（跨股票）相異交易日筆數，用於判斷歷史回補是否已足夠。</summary>
+    /// <summary>取得指定日期以前，資料庫已保存的（跨市場、跨股票）相異交易日筆數，用於相容既有查詢。</summary>
     Task<int> GetDistinctTradeDateCountAsync(DateOnly upToDate, int maxTradingDays, CancellationToken cancellationToken);
+
+    /// <summary>取得指定日期以前，指定市場已保存的相異交易日筆數，用於判斷該市場歷史回補是否已足夠。</summary>
+    Task<int> GetDistinctTradeDateCountAsync(DateOnly upToDate, int maxTradingDays, MarketType marketType, CancellationToken cancellationToken);
+
+    /// <summary>取得指定日期以前，指定股票已保存的相異交易日筆數；用於興櫃持股逐檔歷史回補。</summary>
+    Task<int> GetDistinctTradeDateCountAsync(DateOnly upToDate, int maxTradingDays, string stockCode, CancellationToken cancellationToken);
+
+    /// <summary>確認 DB 是否已保存指定市場、指定交易日的正式收盤價資料；已有資料時回補不應再次抓取。</summary>
+    Task<bool> HasDailyPricesAsync(DateOnly tradeDate, MarketType marketType, CancellationToken cancellationToken);
+
+    /// <summary>確認 DB 是否已保存指定股票、指定交易日的正式收盤價資料；已有資料時逐檔回補不應再次抓取。</summary>
+    Task<bool> HasDailyPriceAsync(DateOnly tradeDate, string stockCode, CancellationToken cancellationToken);
 
     /// <summary>取得指定日期、指定市場是否已有成功批次，用於冪等判斷（同日重跑不重複抓取）。</summary>
     Task<bool> HasSucceededBatchAsync(

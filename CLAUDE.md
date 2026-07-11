@@ -4,6 +4,8 @@
 
 請先閱讀 `AGENTS.md` 與 `00_START_HERE_給Claude_Code.md`，再進行任何修改。本專案也有 Codex 專用 skill：`yi-he-lee-project`；若工作在 Codex 端進行，請以該 skill 進入狀況。兩邊都必須以同一份 repo 文件為準，不以單次聊天記憶取代文件。
 
+**每日五日均價策略（precompute／WinForms 異常頁籤）相關任務，一律先讀 `.claude/skills/daily-ma-precompute/SKILL.md`**：這是一個純資料儲存／均價換算前置作業（代碼、名稱、收盤價、5日均價、20日均價、60日均價、120日均價），與客戶持股比對（Excel 現價／DDE／`StrategyAlert`）是兩個完全不相關、不得耦合的系統，過去多次被誤設計成同一件事。
+
 ## 專案定位
 
 - .NET 8 Windows Forms 系統匣應用程式。

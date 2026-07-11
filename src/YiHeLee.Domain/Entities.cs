@@ -156,6 +156,34 @@ public sealed record MovingAverageResult(
 }
 
 /// <summary>
+/// 每日五日均價策略的前置資料列。這是純 DB 均價快取檢視，不含客戶、Excel 現價或 DDE 狀態。
+/// </summary>
+public sealed record DailyMovingAverageSnapshot(
+    DateOnly TradeDate,
+    string StockCode,
+    string StockName,
+    decimal? ClosePrice,
+    decimal? MovingAverage5,
+    decimal? MovingAverage20,
+    decimal? MovingAverage60,
+    decimal? MovingAverage120,
+    CalculationStatus CalculationStatus,
+    string? MissingReason);
+
+/// <summary>
+/// 已確認在指定回看設定下仍無法補足歷史均線資料的股票；用於避免每日工作因例外股票反覆回補。
+/// </summary>
+public sealed record HistoricalBackfillStockException(
+    string StockCode,
+    MarketType MarketType,
+    int RequiredTradingDays,
+    int MaxLookbackCalendarDays,
+    int AvailableTradingDayCount,
+    DateOnly TargetDate,
+    string Reason,
+    DateTimeOffset CheckedAt);
+
+/// <summary>
 /// 單一有效持股的完整計算結果，供 Excel「每日五日均價策略」頁籤輸出使用。
 /// 與 <see cref="StrategyAlert"/> 不同：<b>每一筆有效持股都必須有一筆</b>，不論是否觸發、
 /// 是否有效交易日數不足、DDE 現價是否無效，都不得因此略過或漏產生。DDE 現價異常只能讓
@@ -350,4 +378,5 @@ public sealed record JobRunSummary(
     int MissingIndicatorCount,
     DateTimeOffset StartedAt,
     DateTimeOffset CompletedAt,
-    IReadOnlyList<StrategyAlert> Alerts);
+    IReadOnlyList<StrategyAlert> Alerts,
+    IReadOnlyList<DailyMovingAverageSnapshot>? MovingAverageAnomalies = null);

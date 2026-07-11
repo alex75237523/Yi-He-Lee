@@ -11,13 +11,12 @@ public interface IExcelWorkbookService
         Action<string>? reportProgress = null);
 
     /// <summary>
-    /// 覆寫輸出頁籤：results 必須是「每一筆有效持股」的完整計算結果（見 <see cref="HoldingStrategyResult"/>），
-    /// 不論是否觸發、DDE 現價是否有效、均線是否因逐檔歷史不足而部分缺項，都必須輸出一列，不得只傳入
-    /// 需要中央通知的 alerts 子集合。
+    /// 覆寫「每日五日均價策略」頁籤；此頁籤只保存代碼、名稱、收盤價、5日均價、20日均價、60日均價、120日均價。
+    /// 客戶、Excel 現價、DDE 狀態、觸發條件與診斷資訊只屬於下游客戶比對，不得寫入此頁籤。
     /// </summary>
     Task WriteStrategyResultsAsync(
         AppSettings settings,
         DateOnly targetDate,
-        IReadOnlyList<HoldingStrategyResult> results,
+        IReadOnlyList<DailyMovingAverageSnapshot> rows,
         CancellationToken cancellationToken);
 }

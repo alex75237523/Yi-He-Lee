@@ -73,6 +73,8 @@ public sealed class DailyJobService
         var totalCrawled = 0;
         var holdingCount = 0;
         IReadOnlyList<StrategyAlert> alerts = [];
+        IReadOnlyList<DailyMovingAverageSnapshot> movingAverageAnomalies = [];
+        IReadOnlyList<DailyMovingAverageSnapshot> movingAverageSnapshots = [];
 
         try
         {
@@ -108,7 +110,7 @@ public sealed class DailyJobService
                 var holidaySummary = new JobRunSummary(
                     jobId, targetDate, JobStatus.NoTradingData, RunOutcome.NonRetryableFailure,
                     holidayMessage,
-                    attemptNumber, totalCrawled, 0, 0, 0, startedAt, _clock.GetTaipeiNow(), []);
+                    attemptNumber, totalCrawled, 0, 0, 0, startedAt, _clock.GetTaipeiNow(), [], []);
                 await _repository.CompleteJobAsync(jobId, holidaySummary, cancellationToken).ConfigureAwait(false);
                 _logger.Info($"工作 {jobId}：{holidaySummary.Message}");
                 _userInteraction.ShowSuccess(holidaySummary);
@@ -139,108 +141,30 @@ public sealed class DailyJobService
                 _logger.Warning(emergingReminder);
             }
 
-            if (settings.ShowExcelSafetyPrompt)
-            {
-                var accepted = await _userInteraction.ConfirmExcelSafetyAsync(cancellationToken).ConfigureAwait(false);
-                if (!accepted)
-                {
-                    throw new RetryableJobException("使用者尚未允許操作 Excel，稍後可重新執行。");
-                }
-            }
-
-            _userInteraction.ShowStatus("正在讀取 Excel 客戶持股……", 35);
-            var holdings = await _excelWorkbookService.ReadHoldingsAsync(
-                settings,
-                targetDate,
-                cancellationToken,
-                detail => _userInteraction.ShowProgressDetail(detail)).ConfigureAwait(false);
-            holdingCount = holdings.Count;
-            _userInteraction.ShowProgressDetail(string.Empty);
-
-            // 逐檔股票代碼正規化、前導零回復與官方主檔身分驗證：統一由 StockIdentityResolutionService 決定
-            // 最終使用的股票代碼與是否納入均線策略，避免在此處另外複製一套代碼解析規則。
-            var rawHoldingCodes = holdings.Select(x => x.StockCode).ToArray();
-            var resolutions = await _stockIdentityResolutionService.ResolveAsync(rawHoldingCodes, cancellationToken).ConfigureAwait(false);
-            var stockCodes = resolutions.Values
-                .Where(x => x.IsRecognized && x.Identity.IsEligibleForMovingAverageStrategy)
-                .Select(x => x.ResolvedCode)
+            // 每日五日均價策略是純 DB 前置作業：只根據當日已保存的官方收盤價股票全集計算並保存
+            // 代碼、名稱、收盤價、MA5、MA20、MA60、MA120。不得依賴客戶持股、Excel 現價或 DDE 狀態。
+            var precomputeStockCodes = (await _marketDataRepository.GetStockCodesWithDailyPriceAsync(targetDate, cancellationToken).ConfigureAwait(false))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            var listedStockCodes = resolutions.Values.Where(x => x.MarketType == MarketType.Listed).Select(x => x.ResolvedCode).ToArray();
-            var otcStockCodes = resolutions.Values.Where(x => x.MarketType == MarketType.Otc).Select(x => x.ResolvedCode).ToArray();
-            var emergingStockCodes = resolutions.Values.Where(x => x.MarketType == MarketType.Emerging).Select(x => x.ResolvedCode).ToArray();
-            var unrecognizedCount = resolutions.Values.Count(x => !x.IsRecognized);
-            var ineligibleCount = resolutions.Values.Count(x => x.IsRecognized && !x.Identity.IsEligibleForMovingAverageStrategy);
-            if (unrecognizedCount > 0 || ineligibleCount > 0)
+            if (precomputeStockCodes.Length == 0)
             {
-                _logger.Info($"Excel 持股代碼逐檔驗證：{unrecognizedCount} 檔無法識別（可能為金額或其他非股票資料）、{ineligibleCount} 檔非策略商品（例如權證），已排除於均線策略之外並於 Excel 輸出標示原因。");
+                throw new RetryableJobException($"{targetDate:yyyy-MM-dd} 已通過官方批次檢查，但 DB 沒有任何當日收盤價可供均線前置計算。");
             }
 
-            // 步驟二：歷史資料回補（採 best-effort；個別股票即使回補失敗，仍以 InsufficientHistory／BackfillFailed
-            // 反映在均線結果，不阻擋整批）。完成判斷逐檔確認，不得只看市場整體交易日數。
-            // 興櫃官方歷史來源只提供個股月份查詢，因此需先讀取 Excel 持股代碼，再只補本次需要判斷的興櫃持股。
-            // 鉅亨網仍在官方 DB 回補與均線計算完成後才抓取，只作最後清單保存與交叉比對。
-            IReadOnlyList<OfficialPriceBatchSummary> backfillSummaries = [];
-            try
-            {
-                _userInteraction.ShowStatus("正在自動檢查 DB 並回補 MA120 所需歷史收盤價，請稍候……", 50);
-                backfillSummaries = await _historicalBackfillJob.RunAsync(
-                    targetDate, settings.OfficialMarketData, cancellationToken,
-                    detail => _userInteraction.ShowProgressDetail(detail),
-                    emergingStockCodes, listedStockCodes, otcStockCodes).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.Warning($"歷史資料回補發生例外，本次僅記錄警告並繼續：{ex.Message}");
-            }
-            finally
-            {
-                // 回補結束（成功或失敗）即清除細節顯示，避免殘留在畫面上。
-                _userInteraction.ShowProgressDetail(string.Empty);
-            }
+            var precomputeMarketTypes = await _marketDataRepository.GetStockMarketTypesAsync(precomputeStockCodes, cancellationToken).ConfigureAwait(false);
+            var listedStockCodes = precomputeStockCodes.Where(code => precomputeMarketTypes.TryGetValue(code, out var mt) && mt == MarketType.Listed).ToArray();
+            var otcStockCodes = precomputeStockCodes.Where(code => precomputeMarketTypes.TryGetValue(code, out var mt) && mt == MarketType.Otc).ToArray();
+            var emergingStockCodes = precomputeStockCodes.Where(code => precomputeMarketTypes.TryGetValue(code, out var mt) && mt == MarketType.Emerging).ToArray();
 
-            // 回補過程中若該市場出現 Failed 批次（非單純 NotPublished／Holiday），代表逐檔仍不足並非單純
-            // 「近期上市、交易日本就有限」，而是回補本身發生錯誤；下方計算完均線後，用來源市場區分兩種原因。
-            var listedBackfillFailed = backfillSummaries.Any(x => x.MarketType == MarketType.Listed && x.Status == OfficialPriceBatchStatus.Failed);
-            var otcBackfillFailed = backfillSummaries.Any(x => x.MarketType == MarketType.Otc && x.Status == OfficialPriceBatchStatus.Failed);
-            var emergingBackfillFailed = backfillSummaries.Any(x => x.MarketType == MarketType.Emerging && x.Status == OfficialPriceBatchStatus.Failed);
-
-            // 步驟三：依官方收盤價計算 MA5／MA20／MA60／MA120（有效交易日，非日曆日）。
-            _userInteraction.ShowStatus("正在依 DB 官方收盤價計算均線……", 70);
-            var rawMovingAverages = await _movingAverageService.CalculateManyAsync(stockCodes, targetDate, cancellationToken).ConfigureAwait(false);
-            var marketTypes = await _marketDataRepository.GetStockMarketTypesAsync(stockCodes, cancellationToken).ConfigureAwait(false);
-            var movingAverages = rawMovingAverages
-                .Select(result =>
-                {
-                    if (result.CalculationStatus != CalculationStatus.InsufficientHistory)
-                    {
-                        return result;
-                    }
-
-                    var hadFailure = marketTypes.TryGetValue(StrategyEvaluationService.NormalizeStockCode(result.StockCode), out var mt) && mt switch
-                    {
-                        MarketType.Listed => listedBackfillFailed,
-                        MarketType.Otc => otcBackfillFailed,
-                        MarketType.Emerging => emergingBackfillFailed,
-                        _ => false
-                    };
-                    if (!hadFailure)
-                    {
-                        return result;
-                    }
-
-                    return result with
-                    {
-                        CalculationStatus = CalculationStatus.BackfillFailed,
-                        MissingReason = $"歷史回補本次發生錯誤（官方來源逾時或格式異常），缺口未完全補齊：{result.MissingReason}"
-                    };
-                })
-                .ToArray();
+            // 步驟二：依 DB 目前已有的官方收盤價計算 MA5／MA20／MA60／MA120（有效交易日，非日曆日）。
+            // 每日均價前置作業只負責「用既有 DB 資料換算並保存」；資料不足時存成異常，
+            // 交由 WinForms「均價資料異常」頁籤告知使用者，不得在每日執行中一路往前自動回補。
+            _userInteraction.ShowStatus("正在依 DB 既有官方收盤價計算均線……", 60);
+            var movingAverages = (await _movingAverageService.CalculateManyAsync(precomputeStockCodes, targetDate, cancellationToken).ConfigureAwait(false)).ToArray();
             await _marketDataRepository.SaveMovingAverageResultsAsync(targetDate, movingAverages, cancellationToken).ConfigureAwait(false);
+            movingAverages = (await _marketDataRepository.GetMovingAverageResultsAsync(targetDate, cancellationToken).ConfigureAwait(false)).ToArray();
+            movingAverageSnapshots = await _marketDataRepository.GetMovingAverageSnapshotsAsync(targetDate, cancellationToken).ConfigureAwait(false);
+            movingAverageAnomalies = await _marketDataRepository.GetMovingAverageAnomaliesAsync(targetDate, cancellationToken).ConfigureAwait(false);
 
             // 步驟四：鉅亨網多頭／空頭排列完整清單（集中＋店頭），只在官方均線算完後作清單保存與交叉驗證。
             // 網站尚未更新或擷取失敗時，只記錄提醒訊息，不影響已由 DB 官方收盤價算出的正式均線與策略流程。
@@ -261,20 +185,51 @@ public sealed class DailyJobService
                 _logger.Warning(cnyesReminder);
             }
 
-            var cnyesValidationStatuses = CrossValidateWithCnyes(cnyesBatches, movingAverages);
+            _ = CrossValidateWithCnyes(cnyesBatches, movingAverages);
+
+            if (settings.ShowExcelSafetyPrompt)
+            {
+                var accepted = await _userInteraction.ConfirmExcelSafetyAsync(cancellationToken).ConfigureAwait(false);
+                if (!accepted)
+                {
+                    throw new RetryableJobException("使用者尚未允許操作 Excel，稍後可重新執行。");
+                }
+            }
+
+            _userInteraction.ShowStatus("正在讀取 Excel 客戶持股……", 88);
+            var holdings = await _excelWorkbookService.ReadHoldingsAsync(
+                settings,
+                targetDate,
+                cancellationToken,
+                detail => _userInteraction.ShowProgressDetail(detail)).ConfigureAwait(false);
+            holdingCount = holdings.Count;
+            _userInteraction.ShowProgressDetail(string.Empty);
+
+            // 客戶比對是下游消費者：只讀取剛才已保存於 DB 的均線結果，不回頭影響均線前置計算。
+            var rawHoldingCodes = holdings.Select(x => x.StockCode).ToArray();
+            var resolutions = await _stockIdentityResolutionService.ResolveAsync(rawHoldingCodes, cancellationToken).ConfigureAwait(false);
+            var holdingStockCodes = resolutions.Values
+                .Where(x => x.IsRecognized && x.Identity.IsEligibleForMovingAverageStrategy)
+                .Select(x => x.ResolvedCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var marketTypes = await _marketDataRepository.GetStockMarketTypesAsync(holdingStockCodes, cancellationToken).ConfigureAwait(false);
+            var unrecognizedCount = resolutions.Values.Count(x => !x.IsRecognized);
+            var ineligibleCount = resolutions.Values.Count(x => x.IsRecognized && !x.Identity.IsEligibleForMovingAverageStrategy);
+            if (unrecognizedCount > 0 || ineligibleCount > 0)
+            {
+                _logger.Info($"Excel 持股代碼逐檔驗證：{unrecognizedCount} 檔無法識別（可能為金額或其他非股票資料）、{ineligibleCount} 檔非策略商品（例如權證），已排除於均線策略之外並於 Excel 輸出標示原因。");
+            }
 
             var calculatedAt = _clock.GetTaipeiNow();
             alerts = _strategyEvaluationService.Evaluate(targetDate, holdings, movingAverages, marketTypes, calculatedAt, resolutions);
 
-            // 「每日五日均價策略」頁籤必須輸出每一筆有效持股的完整計算結果，不能只依賴 alerts
-            // （alerts 只涵蓋觸發、現價異常、無法判斷等需要中央通知的子集合，未觸發的正常持股不在其中）。
-            var holdingResults = _strategyEvaluationService.EvaluateAll(
-                targetDate, holdings, movingAverages, marketTypes, calculatedAt, resolutions, cnyesValidationStatuses);
-
             await _repository.SaveHoldingsAndAlertsAsync(jobId, targetDate, settings.WorkbookPath, holdings, alerts, cancellationToken).ConfigureAwait(false);
 
+            // 「每日五日均價策略」頁籤只保存代碼、名稱、收盤價與 MA5／MA20／MA60／MA120；
+            // 客戶、DDE 現價、觸發條件與診斷資訊留在中央結果頁籤，不寫入此頁籤。
             _userInteraction.ShowStatus("正在寫入「每日五日均價策略」頁籤……", 95);
-            await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, holdingResults, cancellationToken).ConfigureAwait(false);
+            await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, movingAverageSnapshots, cancellationToken).ConfigureAwait(false);
 
             var completedAt = _clock.GetTaipeiNow();
             var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價；比較基準：Excel「現價」欄位（DDE）。";
@@ -306,7 +261,8 @@ public sealed class DailyJobService
                 alerts.Count(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing),
                 startedAt,
                 completedAt,
-                alerts);
+                alerts,
+                movingAverageAnomalies);
 
             await _repository.CompleteJobAsync(jobId, success, cancellationToken).ConfigureAwait(false);
             _logger.Info($"工作 {jobId} 成功：{success.Message}");
@@ -316,37 +272,37 @@ public sealed class DailyJobService
         catch (WebsiteNotUpdatedException ex)
         {
             return await CompleteFailureAsync(jobId, targetDate, attemptNumber, startedAt, totalCrawled, holdingCount,
-                alerts, JobStatus.WebsiteNotUpdated, RunOutcome.RetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
+                alerts, movingAverageAnomalies, JobStatus.WebsiteNotUpdated, RunOutcome.RetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
         }
         catch (RetryableExcelJobException ex)
         {
             return await CompleteFailureAsync(jobId, targetDate, attemptNumber, startedAt, totalCrawled, holdingCount,
-                alerts, ex.Status, RunOutcome.RetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
+                alerts, movingAverageAnomalies, ex.Status, RunOutcome.RetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
         }
         catch (NonRetryableExcelJobException ex)
         {
             return await CompleteFailureAsync(jobId, targetDate, attemptNumber, startedAt, totalCrawled, holdingCount,
-                alerts, ex.Status, RunOutcome.NonRetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
+                alerts, movingAverageAnomalies, ex.Status, RunOutcome.NonRetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
         }
         catch (RetryableJobException ex)
         {
             return await CompleteFailureAsync(jobId, targetDate, attemptNumber, startedAt, totalCrawled, holdingCount,
-                alerts, JobStatus.CrawlFailed, RunOutcome.RetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
+                alerts, movingAverageAnomalies, JobStatus.CrawlFailed, RunOutcome.RetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
         }
         catch (NonRetryableJobException ex)
         {
             return await CompleteFailureAsync(jobId, targetDate, attemptNumber, startedAt, totalCrawled, holdingCount,
-                alerts, JobStatus.ValidationFailed, RunOutcome.NonRetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
+                alerts, movingAverageAnomalies, JobStatus.ValidationFailed, RunOutcome.NonRetryableFailure, ex.Message, ex, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             return await CompleteFailureAsync(jobId, targetDate, attemptNumber, startedAt, totalCrawled, holdingCount,
-                alerts, JobStatus.Cancelled, RunOutcome.NonRetryableFailure, "工作已取消。", null, CancellationToken.None).ConfigureAwait(false);
+                alerts, movingAverageAnomalies, JobStatus.Cancelled, RunOutcome.NonRetryableFailure, "工作已取消。", null, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             return await CompleteFailureAsync(jobId, targetDate, attemptNumber, startedAt, totalCrawled, holdingCount,
-                alerts, JobStatus.CrawlFailed, RunOutcome.RetryableFailure, $"未預期錯誤：{ex.Message}", ex, cancellationToken).ConfigureAwait(false);
+                alerts, movingAverageAnomalies, JobStatus.CrawlFailed, RunOutcome.RetryableFailure, $"未預期錯誤：{ex.Message}", ex, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -386,8 +342,8 @@ public sealed class DailyJobService
     }
 
     /// <summary>
-    /// 官方均線與鉅亨網多頭／空頭排列既有 5／20／60／120 日均價的輕量交叉驗證；僅供人工追查與
-    /// Excel 輸出「鉅亨驗證狀態」欄位參考，不影響正式判斷，也不覆蓋官方資料。
+    /// 官方均線與鉅亨網多頭／空頭排列既有 5／20／60／120 日均價的輕量交叉驗證；僅供人工追查、
+    /// 中央結果診斷與 Log 參考，不影響正式判斷，也不覆蓋官方資料。
     /// 回傳每一檔股票（正規化代碼）對應的驗證狀態文字，未出現在鉅亨清單或本次鉅亨網無資料時
     /// 也會有明確狀態，不得讓 Excel 輸出留白。
     /// </summary>
@@ -570,6 +526,7 @@ public sealed class DailyJobService
         int crawledCount,
         int holdingCount,
         IReadOnlyList<StrategyAlert> alerts,
+        IReadOnlyList<DailyMovingAverageSnapshot> movingAverageAnomalies,
         JobStatus status,
         RunOutcome outcome,
         string message,
@@ -589,7 +546,8 @@ public sealed class DailyJobService
             alerts.Count(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing),
             startedAt,
             _clock.GetTaipeiNow(),
-            alerts);
+            alerts,
+            movingAverageAnomalies);
 
         if (jobId != Guid.Empty)
         {
@@ -612,7 +570,7 @@ public sealed class DailyJobService
     {
         var now = _clock.GetTaipeiNow();
         return new JobRunSummary(Guid.NewGuid(), DateOnly.FromDateTime(now.DateTime), JobStatus.ValidationFailed,
-            outcome, message, 0, 0, 0, 0, 0, now, now, []);
+            outcome, message, 0, 0, 0, 0, 0, now, now, [], []);
     }
 
     private static string ToMarketText(MarketType marketType) => marketType == MarketType.Listed ? "集中市場" : "店頭市場";

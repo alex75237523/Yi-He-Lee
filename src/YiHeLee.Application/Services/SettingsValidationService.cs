@@ -113,13 +113,22 @@ public sealed class SettingsValidationService
 
     public void EnsureFixedSources(AppSettings settings)
     {
+        var officialDefaults = new OfficialMarketDataSettings();
         settings.Sources ??= [];
+        settings.OfficialMarketData ??= officialDefaults;
         settings.ExcludedWorksheetNames ??= [];
         settings.ExcludedHoldingFillColors ??= [];
         settings.ExcludedHoldingTextMarkers ??= [];
 
         // 固定排程不得由設定檔改成其他時間。
         settings.DailyRunTime = AppSettings.FixedDailyRunTime;
+
+        // 官方收盤價是正式均線來源，端點不得停留在舊版或被使用者誤改；
+        // 舊 TPEx 端點會在歷史日期查詢時靜默回傳最新交易日，導致上櫃 MA 無法補足。
+        settings.OfficialMarketData.TwseDailyCloseUrlTemplate = officialDefaults.TwseDailyCloseUrlTemplate;
+        settings.OfficialMarketData.TpexDailyCloseUrlTemplate = officialDefaults.TpexDailyCloseUrlTemplate;
+        settings.OfficialMarketData.EmergingDailyCloseUrl = officialDefaults.EmergingDailyCloseUrl;
+        settings.OfficialMarketData.EmergingHistoricalUrlTemplate = officialDefaults.EmergingHistoricalUrlTemplate;
 
         foreach (var required in SourceDefinitionSetting.CreateDefaults())
         {

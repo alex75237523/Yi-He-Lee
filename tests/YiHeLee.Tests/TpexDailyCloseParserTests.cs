@@ -34,6 +34,36 @@ public sealed class TpexDailyCloseParserTests
     }
 
     [Fact]
+    public void 可解析新版TPEx每日收盤行情端點格式()
+    {
+        const string json = """
+            {
+              "tables": [
+                {
+                  "title": "上櫃股票每日收盤行情(不含定價)",
+                  "date": "115/07/08",
+                  "category": "所有證券(不含權證、牛熊證)",
+                  "totalCount": 2,
+                  "fields": ["代號","名稱","收盤 ","漲跌","開盤 ","最高 ","最低"],
+                  "data": [
+                    ["5351","鈺創","98.20","+0.20","98.00","99.00","97.50"],
+                    ["6488","環球晶","--","0.00","--","--","--"]
+                  ]
+                }
+              ]
+            }
+            """;
+
+        var result = TpexDailyCloseParser.Parse(json);
+
+        Assert.Equal(new DateOnly(2026, 7, 8), result.SourceDataDate);
+        var item = Assert.Single(result.Quotes);
+        Assert.Equal("5351", item.StockCode);
+        Assert.Equal("鈺創", item.StockName);
+        Assert.Equal(98.20m, item.ClosePrice);
+    }
+
+    [Fact]
     public void 回應日期與目標日期不符時_Service層必須能偵測到日期不一致()
     {
         // 這正是實際觀測到的官方行為：查詢當日資料，但來源靜默改回傳前一交易日資料且 HTTP 200。
@@ -58,6 +88,20 @@ public sealed class TpexDailyCloseParserTests
     {
         const string json = "{}";
         var result = TpexDailyCloseParser.Parse(json);
+        Assert.True(result.IsExplicitNoData);
+        Assert.Empty(result.Quotes);
+    }
+
+    [Fact]
+    public void 有來源日期但totalCount為0且data空時視為明確查無資料()
+    {
+        const string json = """
+            {"tables":[{"date":"115/07/10","totalCount":0,"fields":["代號","名稱","收盤 "],"data":[]}]}
+            """;
+
+        var result = TpexDailyCloseParser.Parse(json);
+
+        Assert.Equal(new DateOnly(2026, 7, 10), result.SourceDataDate);
         Assert.True(result.IsExplicitNoData);
         Assert.Empty(result.Quotes);
     }

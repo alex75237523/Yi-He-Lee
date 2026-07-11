@@ -7,7 +7,8 @@ public interface IExcelWorkbookService
     Task<IReadOnlyList<CustomerHolding>> ReadHoldingsAsync(
         AppSettings settings,
         DateOnly targetDate,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        Action<string>? reportProgress = null);
 
     Task WriteStrategyResultsAsync(
         AppSettings settings,

@@ -302,6 +302,8 @@ public sealed class StockHistoryImportService : IStockHistoryImportService
     {
         TwseDailyCloseUrlTemplate = baseSettings.TwseDailyCloseUrlTemplate,
         TpexDailyCloseUrlTemplate = baseSettings.TpexDailyCloseUrlTemplate,
+        EmergingDailyCloseUrl = baseSettings.EmergingDailyCloseUrl,
+        EmergingHistoricalUrlTemplate = baseSettings.EmergingHistoricalUrlTemplate,
         HttpTimeoutSeconds = importOptions.RequestTimeoutSeconds,
         // 內層 Provider 重試次數固定為1（不重試）：本服務在外層依 MaxRetryCount 做指數退避重試，
         // 避免內外兩層重試機制重疊造成延遲不可預期。
@@ -313,5 +315,11 @@ public sealed class StockHistoryImportService : IStockHistoryImportService
     };
 
     private static string DescribeTask(StockPriceImportTaskProgress task)
-        => $"{(task.MarketType == MarketType.Listed ? "上市" : "上櫃")}／{task.RequestedDate:yyyy-MM-dd}";
+        => $"{task.MarketType switch
+        {
+            MarketType.Listed => "上市",
+            MarketType.Otc => "上櫃",
+            MarketType.Emerging => "興櫃",
+            _ => task.MarketType.ToString()
+        }}／{task.RequestedDate:yyyy-MM-dd}";
 }

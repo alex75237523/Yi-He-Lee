@@ -420,6 +420,90 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
     }
 
+    public async Task<int> GetDistinctTradeDateCountAsync(
+        DateOnly upToDate,
+        int maxTradingDays,
+        MarketType marketType,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(*) FROM (
+                SELECT DISTINCT p.TradeDate
+                FROM StockDailyPrice p
+                INNER JOIN StockMaster s ON s.Id = p.StockId
+                WHERE p.TradeDate <= $upToDate AND s.MarketType = $marketType
+                ORDER BY p.TradeDate DESC
+                LIMIT $maxDays
+            );
+            """;
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$upToDate", ToDate(upToDate));
+        command.Parameters.AddWithValue("$marketType", (int)marketType);
+        command.Parameters.AddWithValue("$maxDays", maxTradingDays);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+    }
+
+    public async Task<int> GetDistinctTradeDateCountAsync(
+        DateOnly upToDate,
+        int maxTradingDays,
+        string stockCode,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(*) FROM (
+                SELECT DISTINCT p.TradeDate
+                FROM StockDailyPrice p
+                INNER JOIN StockMaster s ON s.Id = p.StockId
+                WHERE p.TradeDate <= $upToDate AND s.StockCode = $stockCode
+                ORDER BY p.TradeDate DESC
+                LIMIT $maxDays
+            );
+            """;
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$upToDate", ToDate(upToDate));
+        command.Parameters.AddWithValue("$stockCode", stockCode);
+        command.Parameters.AddWithValue("$maxDays", maxTradingDays);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+    }
+
+    public async Task<bool> HasDailyPricesAsync(DateOnly tradeDate, MarketType marketType, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM StockDailyPrice p
+            INNER JOIN StockMaster s ON s.Id = p.StockId
+            WHERE p.TradeDate = $tradeDate AND s.MarketType = $marketType
+            LIMIT 1;
+            """;
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$tradeDate", ToDate(tradeDate));
+        command.Parameters.AddWithValue("$marketType", (int)marketType);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) > 0;
+    }
+
+    public async Task<bool> HasDailyPriceAsync(DateOnly tradeDate, string stockCode, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM StockDailyPrice p
+            INNER JOIN StockMaster s ON s.Id = p.StockId
+            WHERE p.TradeDate = $tradeDate AND s.StockCode = $stockCode
+            LIMIT 1;
+            """;
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$tradeDate", ToDate(tradeDate));
+        command.Parameters.AddWithValue("$stockCode", stockCode);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) > 0;
+    }
+
     public async Task<bool> HasSucceededBatchAsync(
         OfficialPriceJobType jobType,
         DateOnly targetDate,

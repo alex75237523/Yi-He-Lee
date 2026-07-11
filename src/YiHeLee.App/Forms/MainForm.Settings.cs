@@ -20,6 +20,7 @@ internal sealed partial class MainForm
     private readonly CheckBox _createOutputSheet = new();
     private readonly CheckBox _showSafetyPrompt = new();
     private readonly CheckBox _autoOpenWorkbook = new();
+    private readonly CheckBox _enableDailySchedule = new();
     private readonly TextBox _excludedColors = new();
     private readonly TextBox _excludedMarkers = new();
     private readonly BindingList<SourceRowModel> _sourceRows = [];
@@ -230,7 +231,8 @@ internal sealed partial class MainForm
             (_backupBeforeWrite, "寫入 Excel 前建立備份"),
             (_createOutputSheet, "找不到輸出頁籤時自動建立"),
             (_showSafetyPrompt, "操作 Excel 前顯示防呆確認"),
-            (_autoOpenWorkbook, "找不到已開啟的活頁簿時自動開啟 Excel 檔案")
+            (_autoOpenWorkbook, "找不到已開啟的活頁簿時自動開啟 Excel 檔案"),
+            (_enableDailySchedule, "每日 13:35 自動執行排程")
         ];
         foreach (var (checkBox, text) in options)
         {
@@ -418,6 +420,7 @@ internal sealed partial class MainForm
         _createOutputSheet.Checked = settings.CreateOutputWorksheetIfMissing;
         _showSafetyPrompt.Checked = settings.ShowExcelSafetyPrompt;
         _autoOpenWorkbook.Checked = settings.AutoOpenWorkbookIfClosed;
+        _enableDailySchedule.Checked = settings.EnableDailySchedule;
         _excludedColors.Text = string.Join(", ", settings.ExcludedHoldingFillColors);
         _excludedMarkers.Text = string.Join(Environment.NewLine, settings.ExcludedHoldingTextMarkers);
         _showHistoricalPriceButtonSetting = settings.ShowHistoricalPriceButton;
@@ -519,6 +522,7 @@ internal sealed partial class MainForm
         CreateOutputWorksheetIfMissing = _createOutputSheet.Checked,
         ShowExcelSafetyPrompt = _showSafetyPrompt.Checked,
         AutoOpenWorkbookIfClosed = _autoOpenWorkbook.Checked,
+        EnableDailySchedule = _enableDailySchedule.Checked,
         ShowHistoricalPriceButton = _showHistoricalPriceButtonSetting,
         ShowStatusText = _showStatusTextSetting,
         ShowSourceSettings = _showSourceSettingsSetting,

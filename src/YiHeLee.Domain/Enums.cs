@@ -11,8 +11,7 @@ public enum MarketType
     Listed = 1,
     Otc = 2,
 
-    /// <summary>興櫃（TPEx 興櫃股票市場）。當日行情僅有官方即時快照，無日期參數可回補歷史資料，
-    /// 因此只參與每日排程，不參與 <see cref="OfficialPriceJobType.HistoricalBackfill"/>。</summary>
+    /// <summary>興櫃（TPEx 興櫃股票市場）。當日使用官方快照，歷史回補使用官方個股月份歷史行情。</summary>
     Emerging = 3
 }
 
@@ -39,7 +38,10 @@ public enum RunOutcome
 public enum AlertKind
 {
     MovingAverageTriggered = 1,
-    TechnicalIndicatorMissing = 2
+    TechnicalIndicatorMissing = 2,
+
+    /// <summary>Excel「現價」欄位（外部 DDE 連結）為錯誤值、空白、0 或無法解析，無法進行均線判斷。</summary>
+    CurrentPriceInvalid = 3
 }
 
 /// <summary>均線計算狀態：交易日數不足時不得硬算，也不得產生該均線通知。</summary>

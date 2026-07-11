@@ -17,6 +17,10 @@ public static class RocDateConverter
     public static string ToRocSlash(DateOnly date)
         => $"{date.Year - RocEpochOffsetYears}/{date.Month:D2}/{date.Day:D2}";
 
+    /// <summary>轉成 TPEx 興櫃個股歷史月份查詢用的民國年月格式，例如 2026-07-09 -> "115/07"。</summary>
+    public static string ToRocMonthSlash(DateOnly date)
+        => $"{date.Year - RocEpochOffsetYears}/{date.Month:D2}";
+
     /// <summary>解析西元緊湊格式（"20260709"）；失敗回傳 false，不丟例外，交由呼叫端決定如何處理。</summary>
     public static bool TryParseWesternCompact(string? value, out DateOnly date)
     {

@@ -27,8 +27,8 @@ public sealed class AppSettings
     /// <summary>找不到已開啟的指定活頁簿時，自動用 Excel 開啟該檔案，不再要求使用者手動開啟。</summary>
     public bool AutoOpenWorkbookIfClosed { get; set; } = true;
 
-    /// <summary>主視窗「操作」頁籤按鈕、系統匣（右下角）選單「歷史收盤價」項目是否顯示。預設隱藏。</summary>
-    public bool ShowHistoricalPriceButton { get; set; } = false;
+    /// <summary>主視窗「操作」頁籤按鈕、系統匣（右下角）選單「歷史收盤價」項目是否顯示。依使用者要求預設顯示。</summary>
+    public bool ShowHistoricalPriceButton { get; set; } = true;
 
     /// <summary>主視窗「操作」頁籤是否顯示執行中的文字狀態（顯示目前正在擷取／計算哪個步驟）。
     /// 依使用者要求預設顯示；設為 false 時只呈現 0～100% 進度條。與 ShowHistoricalPriceButton 一樣，
@@ -38,6 +38,10 @@ public sealed class AppSettings
     /// <summary>設定頁是否顯示「資料來源網址」頁籤（鉅亨網來源清單）。預設隱藏，避免使用者誤改來源設定；
     /// 與 ShowHistoricalPriceButton 一樣，故意不放進設定頁籤 UI，只是 config 旗標，儲存設定時原樣保留。</summary>
     public bool ShowSourceSettings { get; set; } = false;
+
+    /// <summary>每日 13:35 自動排程是否啟用。設為 false 時排程不執行，使用者仍可手動「立即執行」。
+    /// 2026-07-11 新增，預設啟用以保持既有行為。</summary>
+    public bool EnableDailySchedule { get; set; } = true;
 
     /// <summary>
     /// 持股列若「股名」儲存格套用這些 RGB 填滿色，就視為人工標記的不判斷資料。
@@ -102,14 +106,21 @@ public sealed class OfficialMarketDataSettings
 
     /// <summary>TPEx 官方每日收盤行情（可指定日期）端點，{0} 置換為民國年/月/日。</summary>
     public string TpexDailyCloseUrlTemplate { get; set; } =
-        "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&d={0}&s=0,asc,0";
+        "https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?date={0}&type=EW&response=json";
 
     /// <summary>
     /// TPEx 官方興櫃股票當日行情端點（OpenAPI，無日期參數，僅回報呼叫當下的即時快照）。
-    /// 只能用於每日排程即時累積，不支援指定歷史日期，因此不參與歷史回補。
+    /// 用於每日排程寫入 targetDate 當日價格；歷史回補改用 EmergingHistoricalUrlTemplate。
     /// </summary>
     public string EmergingDailyCloseUrl { get; set; } =
         "https://www.tpex.org.tw/openapi/v1/tpex_esb_latest_statistics";
+
+    /// <summary>
+    /// TPEx 官方興櫃個股歷史行情端點，{0} 置換為民國年月（yyy/MM），{1} 置換為股票代碼。
+    /// 官方只提供個股月份查詢，因此本系統只針對 Excel 持股中的興櫃股票補缺漏日期。
+    /// </summary>
+    public string EmergingHistoricalUrlTemplate { get; set; } =
+        "https://www.tpex.org.tw/www/zh-tw/emerging/historical?date={0}&code={1}&type=Monthly&response=json";
 
     public int HttpTimeoutSeconds { get; set; } = 30;
     public int HttpShortRetryCount { get; set; } = 3;

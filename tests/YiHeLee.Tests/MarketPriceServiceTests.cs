@@ -179,6 +179,109 @@ public sealed class MarketPriceServiceTests
     }
 
     [Fact]
+    public async Task 興櫃持股結構性補不到歷史資料時_確認查無資料後下次執行不再重複查詢同一天()
+    {
+        // 重現實測發現的問題：剛開始興櫃交易的股票，回補迴圈往回走到那之前的日期永遠查不到資料；
+        // 完成判斷（逐檔需求 120 天）因此永遠不會成立，若沒有記住「查過且確認沒有」，
+        // 每次執行都會對同一批過去日期重新發送請求，造成每天執行都要重新回補一次的現象。
+        var twse = FakeTwseProvider.EchoRequestedDate();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var emerging = FakeEmergingProvider.WithNoHistoricalData();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 3,
+            MaxBackfillLookbackCalendarDays = 5,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        // 上市／上櫃皆已足夠，只剩興櫃 4573 完全查不到資料（模擬剛開始交易、更早日期本來就沒有資料）。
+        foreach (var date in new[] { Weekday.AddDays(-1), Weekday.AddDays(-2), Weekday.AddDays(-3) })
+        {
+            repository.SavedPrices.Add(CreateSavedPrice("2330", "台積電", MarketType.Listed, date));
+            repository.SavedPrices.Add(CreateSavedPrice("5351", "鈺創", MarketType.Otc, date));
+        }
+
+        var service = new MarketPriceService(twse, tpex, emerging, repository, new FakeClock(Weekday), new FakeLogger());
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None, emergingStockCodes: ["4573"]);
+        var firstRunCallCount = emerging.CallCount;
+        Assert.True(firstRunCallCount > 0);
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None, emergingStockCodes: ["4573"]);
+
+        // 第二次執行時，所有日期都已在第一次執行確認查無資料，不應再對官方來源重複發送請求。
+        Assert.Equal(firstRunCallCount, emerging.CallCount);
+    }
+
+    [Fact]
+    public async Task 上市歷史回補確認休市後_下次執行不再重複查詢同一天()
+    {
+        // 對稱於興櫃的修正：過去日期一旦確認休市（例如國定假日），這個事實不會再改變，
+        // 不應該每次執行都重新對官方來源查詢同一個過去的休市日。
+        var twse = FakeTwseProvider.WithExplicitHoliday();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 3,
+            MaxBackfillLookbackCalendarDays = 5,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        // 上櫃已足夠，只剩上市持股 2330 完全查不到資料（模擬永遠休市，逐檔需求永遠不會滿足）。
+        foreach (var date in new[] { Weekday.AddDays(-1), Weekday.AddDays(-2), Weekday.AddDays(-3) })
+        {
+            repository.SavedPrices.Add(CreateSavedPrice("5351", "鈺創", MarketType.Otc, date));
+        }
+
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None, listedStockCodes: ["2330"]);
+        var firstRunCallCount = twse.CallCount;
+        Assert.True(firstRunCallCount > 0);
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None, listedStockCodes: ["2330"]);
+
+        // 第二次執行時，所有日期都已在第一次執行確認休市，不應再對官方來源重複發送請求。
+        Assert.Equal(firstRunCallCount, twse.CallCount);
+    }
+
+    [Fact]
+    public async Task 持股歷史已走完整個回看範圍仍不足時_同日重跑不再重複掃描()
+    {
+        // 重現實機畫面「同一日期重複按就一直回補」：市場整體足夠，但指定持股本身歷史太短，
+        // 第一次已把可查範圍掃完仍不足後，第二次同一策略日期與同一持股組合應直接略過重複掃描。
+        var twse = FakeTwseProvider.EchoRequestedDate();
+        var tpex = FakeTpexProvider.EchoRequestedDate();
+        var repository = new FakeMarketDataRepository();
+        var settings = new OfficialMarketDataSettings
+        {
+            RequiredTradingDaysForMa120 = 3,
+            MaxBackfillLookbackCalendarDays = 5,
+            BackfillThrottleMillisecondsBetweenRequests = 0
+        };
+
+        // 持股 7795 只有 1 日；TWSE 回補結果只提供 2330，模擬 7795 掛牌較晚或該日無資料。
+        foreach (var date in new[] { Weekday.AddDays(-1), Weekday.AddDays(-2), Weekday.AddDays(-3) })
+        {
+            repository.SavedPrices.Add(CreateSavedPrice("5351", "鈺創", MarketType.Otc, date));
+        }
+        repository.SavedPrices.Add(CreateSavedPrice("7795", "長廣", MarketType.Listed, Weekday.AddDays(-1)));
+
+        var service = new MarketPriceService(twse, tpex, FakeEmergingProvider.WithMatchingDate(), repository, new FakeClock(Weekday), new FakeLogger());
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None, listedStockCodes: ["7795"]);
+        var firstRunCallCount = twse.CallCount;
+        Assert.True(firstRunCallCount > 0);
+        Assert.NotEmpty(repository.ExhaustedBackfillProbes);
+
+        await service.BackfillHistoryAsync(Weekday, settings, CancellationToken.None, listedStockCodes: ["7795"]);
+
+        Assert.Equal(firstRunCallCount, twse.CallCount);
+    }
+
+    [Fact]
     public async Task 市場整體已有足夠交易日但指定持股仍不足時必須繼續回補()
     {
         // 上櫃市場整體已有 3 個交易日（由另一檔股票貢獻），但持股 5351 只有 1 筆；
@@ -416,6 +519,7 @@ public sealed class MarketPriceServiceTests
 
         public static FakeEmergingProvider WithMatchingDate() => new(date => Success(MarketType.Emerging, "TPEx興櫃", date, date));
         public static FakeEmergingProvider WithMismatchedDate(DateOnly returnedDate) => new(date => Success(MarketType.Emerging, "TPEx興櫃", date, returnedDate));
+        public static FakeEmergingProvider WithNoHistoricalData() => new(date => Holiday(MarketType.Emerging, "TPEx興櫃", date));
 
         public Task<OfficialPriceFetchResult> FetchDailyCloseAsync(DateOnly requestedDate, OfficialMarketDataSettings settings, CancellationToken cancellationToken)
         {
@@ -469,6 +573,9 @@ public sealed class MarketPriceServiceTests
     {
         public List<OfficialStockPrice> SavedPrices { get; } = [];
         private readonly HashSet<(OfficialPriceJobType, DateOnly, string)> _succeededBatches = [];
+        private readonly HashSet<(OfficialPriceJobType, DateOnly, string)> _holidayBatches = [];
+        private readonly HashSet<(string Code, DateOnly Date)> _confirmedNoEmergingData = new();
+        public HashSet<(DateOnly TargetDate, int RequiredTradingDays, int MaxLookbackCalendarDays, string StockSetKey)> ExhaustedBackfillProbes { get; } = [];
 
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
@@ -480,6 +587,10 @@ public sealed class MarketPriceServiceTests
             if (summary.Status == OfficialPriceBatchStatus.Succeeded)
             {
                 _succeededBatches.Add((summary.JobType, summary.TargetDate, summary.SourceProvider));
+            }
+            else if (summary.Status == OfficialPriceBatchStatus.Holiday)
+            {
+                _holidayBatches.Add((summary.JobType, summary.TargetDate, summary.SourceProvider));
             }
 
             return Task.CompletedTask;
@@ -529,10 +640,37 @@ public sealed class MarketPriceServiceTests
         public Task<bool> HasSucceededBatchAsync(OfficialPriceJobType jobType, DateOnly targetDate, string sourceProvider, CancellationToken cancellationToken)
             => Task.FromResult(_succeededBatches.Contains((jobType, targetDate, sourceProvider)));
 
+        public Task<bool> HasResolvedHolidayBatchAsync(DateOnly targetDate, string sourceProvider, CancellationToken cancellationToken)
+            => Task.FromResult(_holidayBatches.Contains((OfficialPriceJobType.HistoricalBackfill, targetDate, sourceProvider)));
+
         public Task<StockDailyPriceQueryResult> QueryDailyPricesAsync(StockDailyPriceQueryFilter filter, CancellationToken cancellationToken)
             => Task.FromResult(new StockDailyPriceQueryResult([], 0, filter.Page, filter.PageSize));
 
         public Task<DateOnly?> GetLatestTradeDateAsync(CancellationToken cancellationToken)
             => Task.FromResult(SavedPrices.Count == 0 ? (DateOnly?)null : SavedPrices.Max(x => x.TradeDate));
+
+        public Task<IReadOnlySet<string>> GetConfirmedNoEmergingDataCodesAsync(DateOnly tradeDate, IReadOnlyCollection<string> stockCodes, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>(
+                stockCodes.Where(code => _confirmedNoEmergingData.Contains((code, tradeDate))),
+                StringComparer.OrdinalIgnoreCase));
+
+        public Task RecordConfirmedNoEmergingDataAsync(DateOnly tradeDate, IReadOnlyCollection<string> stockCodes, DateTimeOffset checkedAt, CancellationToken cancellationToken)
+        {
+            foreach (var code in stockCodes)
+            {
+                _confirmedNoEmergingData.Add((code, tradeDate));
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> HasExhaustedHistoricalBackfillProbeAsync(DateOnly targetDate, int requiredTradingDays, int maxLookbackCalendarDays, string stockSetKey, CancellationToken cancellationToken)
+            => Task.FromResult(ExhaustedBackfillProbes.Contains((targetDate, requiredTradingDays, maxLookbackCalendarDays, stockSetKey)));
+
+        public Task RecordExhaustedHistoricalBackfillProbeAsync(DateOnly targetDate, int requiredTradingDays, int maxLookbackCalendarDays, string stockSetKey, string insufficientSummary, DateTimeOffset checkedAt, CancellationToken cancellationToken)
+        {
+            ExhaustedBackfillProbes.Add((targetDate, requiredTradingDays, maxLookbackCalendarDays, stockSetKey));
+            return Task.CompletedTask;
+        }
     }
 }

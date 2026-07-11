@@ -1,5 +1,7 @@
 using YiHeLee.Application.Abstractions;
 using YiHeLee.Domain;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace YiHeLee.Application.Services;
 
@@ -78,12 +80,20 @@ public sealed class MarketPriceService : IMarketPriceService
         var emergingCodes = NormalizeCodes(emergingStockCodes);
         var listedCodes = NormalizeCodes(listedStockCodes);
         var otcCodes = NormalizeCodes(otcStockCodes);
+        var hasTrackedStocks = listedCodes.Length > 0 || otcCodes.Length > 0 || emergingCodes.Length > 0;
+        var stockSetKey = hasTrackedStocks
+            ? CreateBackfillStockSetKey(listedCodes, otcCodes, emergingCodes)
+            : string.Empty;
 
         // 歷史回補只補建 targetDate「以前」的資料；targetDate 當日一律由每日正式排程負責，兩者不得混用。
         // 判斷「是否已足夠」一律以固定基準日（targetDate 前一日）為準，不可隨 cursor 逐日倒退而跟著縮小查詢範圍。
         // 上市與上櫃必須分開計算，避免上市已滿 120 日時誤判上櫃也足夠，導致上櫃股 MA5／MA20 持續空白。
         var referenceDate = targetDate.AddDays(-1);
         var cursor = referenceDate;
+        var completedBecauseSufficient = false;
+        var completedBecausePreviouslyExhausted = false;
+        var sawUnresolvedFetchStatus = false;
+        string? lastInsufficientSummary = null;
         for (var walked = 0; walked < maxLookbackCalendarDays; walked++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -106,10 +116,28 @@ public sealed class MarketPriceService : IMarketPriceService
 
             if (listedSufficient && otcSufficient && insufficientEmergingCodes.Length == 0)
             {
+                completedBecauseSufficient = true;
                 var emergingText = emergingCodes.Length == 0
                     ? "無興櫃持股需回補"
                     : $"興櫃持股 {emergingCodes.Length} 檔皆已足夠";
                 reportProgress?.Invoke($"MA120 歷史資料已足夠（上市 {listedTradingDays}/{requiredTradingDays}、上櫃 {otcTradingDays}/{requiredTradingDays} 個交易日，{emergingText}），不需回補。");
+                break;
+            }
+
+            lastInsufficientSummary = DescribeBackfillInsufficiency(
+                listedInsufficientStocks, listedStockCounts,
+                otcInsufficientStocks, otcStockCounts,
+                insufficientEmergingCodes, emergingTradingDayCounts,
+                requiredTradingDays);
+
+            if (hasTrackedStocks
+                && await _repository.HasExhaustedHistoricalBackfillProbeAsync(
+                    targetDate, requiredTradingDays, maxLookbackCalendarDays, stockSetKey, cancellationToken).ConfigureAwait(false))
+            {
+                completedBecausePreviouslyExhausted = true;
+                reportProgress?.Invoke(
+                    $"MA120 歷史回補先前已針對本次持股組合走完整個回看範圍（最多 {maxLookbackCalendarDays} 個日曆日），" +
+                    $"仍有個股因掛牌較晚、停牌或興櫃歷史來源查無資料而不足；本次略過重複回補。{lastInsufficientSummary}");
                 break;
             }
 
@@ -161,13 +189,45 @@ public sealed class MarketPriceService : IMarketPriceService
 
                     if (missingCodes.Count > 0)
                     {
-                        var minCount = insufficientEmergingCodes.Min(code => emergingTradingDayCounts[code]);
-                        reportProgress?.Invoke(
-                            $"正在自動回補 MA120 歷史收盤價：抓取 {cursor:yyyy-MM-dd} 興櫃（TPEx）持股 {missingCodes.Count} 檔（{string.Join("、", missingCodes.Take(8))}{(missingCodes.Count > 8 ? "…" : string.Empty)}）……" +
-                            $"（興櫃最少已累積 {minCount}/{requiredTradingDays} 個交易日）");
-                        emergingSummary = await FetchAndSaveEmergingHistoricalAsync(
-                            cursor, missingCodes, settings, cancellationToken).ConfigureAwait(false);
-                        summaries.Add(emergingSummary);
+                        // 興櫃很多持股本來就是最近才開始交易，回補迴圈往回走到那之前的日期永遠查不到資料；
+                        // 沒有下面這層記憶化的話，這個「查不到」會在每一次執行都重新對官方來源問一次同一天、
+                        // 同一批股票，白白浪費時間。先排除先前執行已確認「這一天這檔查無資料」的組合，
+                        // 只對真正還沒查過的組合發送請求（歷史資料一經確認即不會改變）。
+                        var confirmedEmpty = await _repository.GetConfirmedNoEmergingDataCodesAsync(
+                            cursor, missingCodes, cancellationToken).ConfigureAwait(false);
+                        var codesToQuery = missingCodes.Where(code => !confirmedEmpty.Contains(code)).ToArray();
+
+                        if (codesToQuery.Length > 0)
+                        {
+                            var minCount = insufficientEmergingCodes.Min(code => emergingTradingDayCounts[code]);
+                            reportProgress?.Invoke(
+                                $"正在自動回補 MA120 歷史收盤價：抓取 {cursor:yyyy-MM-dd} 興櫃（TPEx）持股 {codesToQuery.Length} 檔（{string.Join("、", codesToQuery.Take(8))}{(codesToQuery.Length > 8 ? "…" : string.Empty)}）……" +
+                                $"（興櫃最少已累積 {minCount}/{requiredTradingDays} 個交易日）");
+                            emergingSummary = await FetchAndSaveEmergingHistoricalAsync(
+                                cursor, codesToQuery, settings, cancellationToken).ConfigureAwait(false);
+                            summaries.Add(emergingSummary);
+
+                            // 抓取後仍然沒有資料的代碼，代表這一天這檔確定查無興櫃歷史行情（例如尚未開始交易），
+                            // 記錄下來讓未來執行可以直接略過，不必每天重新問一次同樣查不到的組合。
+                            var stillEmpty = new List<string>(codesToQuery.Length);
+                            foreach (var code in codesToQuery)
+                            {
+                                if (!await _repository.HasDailyPriceAsync(cursor, code, cancellationToken).ConfigureAwait(false))
+                                {
+                                    stillEmpty.Add(code);
+                                }
+                            }
+
+                            if (stillEmpty.Count > 0)
+                            {
+                                await _repository.RecordConfirmedNoEmergingDataAsync(
+                                    cursor, stillEmpty, _clock.GetTaipeiNow(), cancellationToken).ConfigureAwait(false);
+                            }
+                        }
+                        else
+                        {
+                            reportProgress?.Invoke($"興櫃（TPEx）{cursor:yyyy-MM-dd} 需要的持股先前已確認查無資料，本次略過重複查詢（{missingCodes.Count} 檔）。");
+                        }
                     }
                     else
                     {
@@ -180,11 +240,33 @@ public sealed class MarketPriceService : IMarketPriceService
                     listedTradingDays, otcTradingDays, emergingTradingDayCounts,
                     requiredTradingDays));
 
-                // 避免大量平行轟炸官方網站；逐日之間節流。
-                await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(0, settings.BackfillThrottleMillisecondsBetweenRequests)), cancellationToken).ConfigureAwait(false);
+                sawUnresolvedFetchStatus |= IsUnresolved(twseSummary)
+                    || IsUnresolved(tpexSummary)
+                    || IsUnresolved(emergingSummary);
+
+                // 避免大量平行轟炸官方網站；逐日之間節流。只有本次迭代真的對官方來源發出過請求時才需要節流，
+                // 三個市場都因為已足夠或已確認查無資料而略過時，不必白白等待。
+                if (twseSummary is not null || tpexSummary is not null || emergingSummary is not null)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(0, settings.BackfillThrottleMillisecondsBetweenRequests)), cancellationToken).ConfigureAwait(false);
+                }
             }
 
             cursor = cursor.AddDays(-1);
+        }
+
+        if (hasTrackedStocks
+            && !completedBecauseSufficient
+            && !completedBecausePreviouslyExhausted
+            && !sawUnresolvedFetchStatus
+            && !string.IsNullOrWhiteSpace(lastInsufficientSummary))
+        {
+            await _repository.RecordExhaustedHistoricalBackfillProbeAsync(
+                targetDate, requiredTradingDays, maxLookbackCalendarDays, stockSetKey,
+                lastInsufficientSummary, _clock.GetTaipeiNow(), cancellationToken).ConfigureAwait(false);
+            reportProgress?.Invoke(
+                $"MA120 歷史回補已走完整個回看範圍（最多 {maxLookbackCalendarDays} 個日曆日），" +
+                $"仍有個股本身歷史不足；已記錄此結果，同一日期重跑時會略過重複回補。{lastInsufficientSummary}");
         }
 
         return summaries;
@@ -217,6 +299,39 @@ public sealed class MarketPriceService : IMarketPriceService
         return $"，其中持股 {insufficientCodes.Count} 檔逐檔檢查仍不足（{string.Join("、", sample)}{more}）";
     }
 
+    private static string DescribeBackfillInsufficiency(
+        IReadOnlyCollection<string> listedInsufficientCodes,
+        IReadOnlyDictionary<string, int> listedCounts,
+        IReadOnlyCollection<string> otcInsufficientCodes,
+        IReadOnlyDictionary<string, int> otcCounts,
+        IReadOnlyCollection<string> emergingInsufficientCodes,
+        IReadOnlyDictionary<string, int> emergingCounts,
+        int requiredTradingDays)
+    {
+        static string DescribeMarket(string marketName, IReadOnlyCollection<string> codes, IReadOnlyDictionary<string, int> counts, int required)
+        {
+            if (codes.Count == 0)
+            {
+                return $"{marketName}無不足";
+            }
+
+            var sample = codes
+                .Take(5)
+                .Select(code => $"{code}:{(counts.TryGetValue(code, out var count) ? count : 0)}/{required}")
+                .ToArray();
+            var more = codes.Count > sample.Length ? "…" : string.Empty;
+            return $"{marketName}{codes.Count}檔不足（{string.Join("、", sample)}{more}）";
+        }
+
+        return "不足明細：" +
+               $"{DescribeMarket("上市", listedInsufficientCodes, listedCounts, requiredTradingDays)}、" +
+               $"{DescribeMarket("上櫃", otcInsufficientCodes, otcCounts, requiredTradingDays)}、" +
+               $"{DescribeMarket("興櫃", emergingInsufficientCodes, emergingCounts, requiredTradingDays)}。";
+    }
+
+    private static bool IsUnresolved(OfficialPriceBatchSummary? summary)
+        => summary?.Status is OfficialPriceBatchStatus.Failed or OfficialPriceBatchStatus.NotPublished;
+
     /// <summary>組出單日回補結果的細節文字（供畫面顯示），例如「上市 新增 1023 筆、上櫃 新增 812 筆」或「休市」。</summary>
     private static string DescribeBackfillDay(
         DateOnly date,
@@ -230,6 +345,7 @@ public sealed class MarketPriceService : IMarketPriceService
     {
         static string Describe(string marketName, OfficialPriceBatchSummary? summary) => summary?.Status switch
         {
+            OfficialPriceBatchStatus.Succeeded when IsSkipSummary(summary) => $"{marketName} DB 已有資料，略過",
             OfficialPriceBatchStatus.Succeeded => $"{marketName} 新增 {summary.InsertedCount} 筆、更新 {summary.UpdatedCount} 筆",
             OfficialPriceBatchStatus.Holiday => $"{marketName} 休市",
             OfficialPriceBatchStatus.NotPublished => $"{marketName} 尚未公布",
@@ -243,6 +359,23 @@ public sealed class MarketPriceService : IMarketPriceService
 
         return $"已完成 {date:yyyy-MM-dd} 自動回補：{Describe("上市", twse)}、{Describe("上櫃", tpex)}、{Describe("興櫃", emerging)}" +
                $"（回補前累積：上市 {listedTradingDays}/{requiredTradingDays}、上櫃 {otcTradingDays}/{requiredTradingDays}、{emergingProgress} 個交易日）";
+    }
+
+    private static bool IsSkipSummary(OfficialPriceBatchSummary summary)
+        => summary.BatchId.StartsWith("(skip-", StringComparison.Ordinal)
+           || summary.ErrorMessage?.Contains("略過", StringComparison.OrdinalIgnoreCase) == true
+           || summary.ErrorMessage?.Contains("已保存", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static string CreateBackfillStockSetKey(
+        IReadOnlyCollection<string> listedCodes,
+        IReadOnlyCollection<string> otcCodes,
+        IReadOnlyCollection<string> emergingCodes)
+    {
+        var raw = $"L:{string.Join(",", listedCodes.Order(StringComparer.OrdinalIgnoreCase))}" +
+                  $"|O:{string.Join(",", otcCodes.Order(StringComparer.OrdinalIgnoreCase))}" +
+                  $"|E:{string.Join(",", emergingCodes.Order(StringComparer.OrdinalIgnoreCase))}";
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
+        return Convert.ToHexString(bytes);
     }
 
     /// <summary>
@@ -382,6 +515,15 @@ public sealed class MarketPriceService : IMarketPriceService
         {
             _logger.Info($"{providerName} {targetDate:yyyy-MM-dd}（{jobType}）官方收盤價本次已成功保存過，略過重複抓取。");
             return CreateSyntheticSummary(jobType, targetDate, providerName, marketType, OfficialPriceBatchStatus.Succeeded, "同一目標日期先前已成功寫入，本次略過重複抓取（冪等）。");
+        }
+
+        // 歷史回補（過去日期）若先前已明確確認為休市／無交易資料，這個結果不會再改變，
+        // 不需要每次執行都重新問一次官方來源同一個過去的休市日（例如國定假日）。
+        if (jobType == OfficialPriceJobType.HistoricalBackfill
+            && await _repository.HasResolvedHolidayBatchAsync(targetDate, providerName, cancellationToken).ConfigureAwait(false))
+        {
+            _logger.Info($"{providerName} {targetDate:yyyy-MM-dd}（{jobType}）先前已確認休市或無交易資料，本次略過重複查詢。");
+            return CreateSyntheticSummary(jobType, targetDate, providerName, marketType, OfficialPriceBatchStatus.Holiday, "先前執行已確認此日期休市或無交易資料，本次略過重複查詢。");
         }
 
         var startedAt = _clock.GetTaipeiNow();

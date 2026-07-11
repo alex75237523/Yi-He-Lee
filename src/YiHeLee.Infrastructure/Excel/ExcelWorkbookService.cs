@@ -11,10 +11,11 @@ namespace YiHeLee.Infrastructure.Excel;
 
 public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 {
-    // 代碼／名稱／市場別／收盤價／5日均價／20日均價／60日均價／120日均價／有效交易日數／
-    // 最新收盤日期／計算狀態／缺少原因／來源頁籤／原始列號，共 14 欄（A～N）。
-    private const int OutputColumnCount = 14;
-    private const string OutputRangeLastColumn = "N";
+    // 「每日五日均價策略」頁籤只保存均價前置資料欄位：
+    // 代碼／名稱／收盤價／5日均價／20日均價／60日均價／120日均價，共 7 欄（A～G）。
+    // 客戶、Excel 現價、DDE 狀態、觸發條件與診斷欄位屬於下游客戶比對，不得寫入此頁籤。
+    private const int OutputColumnCount = 7;
+    private const string OutputRangeLastColumn = "G";
     private readonly string _backupDirectory;
     private readonly IAppLogger _logger;
     private readonly HoldingRowExclusionService _holdingRowExclusionService;
@@ -44,13 +45,13 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
     public Task WriteStrategyResultsAsync(
         AppSettings settings,
         DateOnly targetDate,
-        IReadOnlyList<StrategyAlert> alerts,
+        IReadOnlyList<DailyMovingAverageSnapshot> rows,
         CancellationToken cancellationToken)
         => ExecuteWithExcelRetryAsync(
             settings,
             () =>
             {
-                WriteStrategyResultsCore(settings, targetDate, alerts);
+                WriteStrategyResultsCore(settings, targetDate, rows);
                 return true;
             },
             "寫入 Excel 策略結果",
@@ -238,7 +239,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         }
     }
 
-    private void WriteStrategyResultsCore(AppSettings settings, DateOnly targetDate, IReadOnlyList<StrategyAlert> alerts)
+    private void WriteStrategyResultsCore(AppSettings settings, DateOnly targetDate, IReadOnlyList<DailyMovingAverageSnapshot> rows)
     {
         ExcelInterop.Workbook? workbook = null;
         ExcelInterop.Application? application = null;
@@ -247,6 +248,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         ExcelInterop.Range? clearRange = null;
         ExcelInterop.Range? dataRange = null;
         ExcelInterop.Range? headerRange = null;
+        ExcelInterop.Range? codeColumnPreformatRange = null;
         try
         {
             workbook = ExcelRunningObjectResolver.FindOpenWorkbook(settings.WorkbookPath, settings.AutoOpenWorkbookIfClosed);
@@ -267,15 +269,10 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                     $"頁籤「{settings.OutputWorksheetName}」目前受保護，請先解除保護後再執行。");
             }
 
-            var ordered = alerts
-                .OrderBy(x => x.AlertKind switch
-                {
-                    AlertKind.MovingAverageTriggered => 0,
-                    AlertKind.CurrentPriceInvalid => 1,
-                    _ => 2
-                })
-                .ThenBy(x => x.CustomerName, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(x => x.StockCode, StringComparer.OrdinalIgnoreCase)
+            var ordered = rows
+                .GroupBy(x => x.StockCode, StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First())
+                .OrderBy(x => x.StockCode, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
             var lastClearRow = Math.Max(10_000, ordered.Length + 20);
@@ -287,12 +284,11 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             clearRange.Clear();
 
             var rowCount = Math.Max(2, ordered.Length + 1);
-            var matrix = new object[rowCount, OutputColumnCount];
+            var matrix = new object?[rowCount, OutputColumnCount];
 
             var headers = new[]
             {
-                "代碼", "名稱", "市場別", "收盤價", "5日均價", "20日均價", "60日均價", "120日均價",
-                "有效交易日數", "最新收盤日期", "計算狀態", "缺少原因", "來源頁籤", "原始列號"
+                "代碼", "名稱", "收盤價", "5日均價", "20日均價", "60日均價", "120日均價"
             };
             for (var column = 0; column < headers.Length; column++)
             {
@@ -301,23 +297,20 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
 
             for (var index = 0; index < ordered.Length; index++)
             {
-                var alert = ordered[index];
+                var item = ordered[index];
                 var row = index + 1;
-                matrix[row, 0] = alert.StockCode;
-                matrix[row, 1] = alert.StockName;
-                matrix[row, 2] = DescribeMarketType(alert.MarketType);
-                matrix[row, 3] = alert.ClosePrice;
-                matrix[row, 4] = alert.MovingAverage5;
-                matrix[row, 5] = alert.MovingAverage20;
-                matrix[row, 6] = alert.MovingAverage60;
-                matrix[row, 7] = alert.MovingAverage120;
-                matrix[row, 8] = alert.AvailableTradingDayCount;
-                matrix[row, 9] = alert.LatestAvailableTradeDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
-                matrix[row, 10] = alert.DiagnosticStatus ?? DescribeDefaultDiagnosticStatus(alert.AlertKind);
-                matrix[row, 11] = alert.MissingReason ?? string.Empty;
-                matrix[row, 12] = alert.SheetName;
-                matrix[row, 13] = alert.ExcelRow;
+                matrix[row, 0] = item.StockCode;
+                matrix[row, 1] = item.StockName;
+                matrix[row, 2] = item.ClosePrice;
+                matrix[row, 3] = item.MovingAverage5;
+                matrix[row, 4] = item.MovingAverage20;
+                matrix[row, 5] = item.MovingAverage60;
+                matrix[row, 6] = item.MovingAverage120;
             }
+
+            // 必須先把代碼欄設成文字格式再寫入 Value2，否則 Excel 會把 0050 自動轉成數字 50。
+            codeColumnPreformatRange = worksheet.Range[$"A2:A{rowCount}"];
+            codeColumnPreformatRange.NumberFormat = "@";
 
             dataRange = worksheet.Range[$"A1:{OutputRangeLastColumn}{rowCount}"];
             dataRange.Value2 = matrix;
@@ -328,7 +321,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             headerRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.FromArgb(189, 215, 238));
             headerRange.Borders.LineStyle = ExcelInterop.XlLineStyle.xlContinuous;
 
-            FormatOutputColumns(worksheet, rowCount, ordered);
+            FormatOutputColumns(worksheet, rowCount);
 
             workbook.Save();
         }
@@ -336,6 +329,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         {
             ComObject.FinalRelease(headerRange);
             ComObject.FinalRelease(dataRange);
+            ComObject.FinalRelease(codeColumnPreformatRange);
             ComObject.FinalRelease(clearRange);
             ComObject.FinalRelease(worksheet);
             ComObject.FinalRelease(worksheets);
@@ -344,12 +338,11 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         }
     }
 
-    private static void FormatOutputColumns(ExcelInterop.Worksheet worksheet, int rowCount, IReadOnlyList<StrategyAlert> alerts)
+    private static void FormatOutputColumns(ExcelInterop.Worksheet worksheet, int rowCount)
     {
         ExcelInterop.Range? allRange = null;
         ExcelInterop.Range? codeColumn = null;
         ExcelInterop.Range? numericRange = null;
-        ExcelInterop.Range? missingRange = null;
         try
         {
             allRange = worksheet.Range[$"A1:{OutputRangeLastColumn}{rowCount}"];
@@ -357,62 +350,27 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             allRange.VerticalAlignment = ExcelInterop.XlVAlign.xlVAlignCenter;
             allRange.WrapText = true;
 
-            // 代碼欄位固定文字格式，保留前導零（例如 0050）；均線相關欄位（收盤價～120日均價）為數字格式；
-            // 有效交易日數為整數；其餘診斷欄位（最新收盤日期、計算狀態、缺少原因、來源頁籤）為文字。
+            // 代碼欄位固定文字格式，保留前導零（例如 0050）；價格與均線欄位為數字格式。
             codeColumn = worksheet.Range[$"A2:A{rowCount}"];
             codeColumn.NumberFormat = "@";
-            numericRange = worksheet.Range[$"D2:H{rowCount}"];
+            numericRange = worksheet.Range[$"C2:G{rowCount}"];
             numericRange.NumberFormat = "0.00";
 
-            SetColumnWidth(worksheet, "A", 12);
-            SetColumnWidth(worksheet, "B", 18);
+            SetColumnWidth(worksheet, "A", 10);
+            SetColumnWidth(worksheet, "B", 16);
             SetColumnWidth(worksheet, "C", 10);
-            SetColumnWidth(worksheet, "D", 11);
-            SetColumnWidth(worksheet, "E", 11);
-            SetColumnWidth(worksheet, "F", 11);
-            SetColumnWidth(worksheet, "G", 11);
-            SetColumnWidth(worksheet, "H", 12);
-            SetColumnWidth(worksheet, "I", 13);
-            SetColumnWidth(worksheet, "J", 13);
-            SetColumnWidth(worksheet, "K", 14);
-            SetColumnWidth(worksheet, "L", 40);
-            SetColumnWidth(worksheet, "M", 16);
-            SetColumnWidth(worksheet, "N", 10);
-
-            // 現價異常與無技術資料的列一律以底色標示，提醒使用者這些持股本次未完成判斷。
-            var firstMissingIndex = alerts.ToList().FindIndex(x => x.AlertKind != AlertKind.MovingAverageTriggered);
-            if (firstMissingIndex >= 0)
-            {
-                var startRow = firstMissingIndex + 2;
-                var endRow = alerts.Count + 1;
-                missingRange = worksheet.Range[$"A{startRow}:{OutputRangeLastColumn}{endRow}"];
-                missingRange.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.LightYellow);
-            }
+            SetColumnWidth(worksheet, "D", 10);
+            SetColumnWidth(worksheet, "E", 10);
+            SetColumnWidth(worksheet, "F", 10);
+            SetColumnWidth(worksheet, "G", 10);
         }
         finally
         {
-            ComObject.FinalRelease(missingRange);
             ComObject.FinalRelease(numericRange);
             ComObject.FinalRelease(codeColumn);
             ComObject.FinalRelease(allRange);
         }
     }
-
-    private static string DescribeMarketType(MarketType? marketType) => marketType switch
-    {
-        MarketType.Listed => "上市",
-        MarketType.Otc => "上櫃",
-        MarketType.Emerging => "興櫃",
-        _ => "未知"
-    };
-
-    /// <summary>舊資料或未帶入 DiagnosticStatus 時的保底文字，正常流程應一律由 StrategyEvaluationService 帶入。</summary>
-    private static string DescribeDefaultDiagnosticStatus(AlertKind alertKind) => alertKind switch
-    {
-        AlertKind.MovingAverageTriggered => "正常",
-        AlertKind.CurrentPriceInvalid => "Excel現價異常",
-        _ => "歷史資料不足"
-    };
 
     private static void SetColumnWidth(ExcelInterop.Worksheet worksheet, string column, double width)
     {

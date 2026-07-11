@@ -30,6 +30,25 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         await ExecuteNonQueryAsync(connection, null, "PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false);
         await MigrateEntryAveragePriceToCurrentPriceAsync(connection, cancellationToken).ConfigureAwait(false);
         await ExecuteNonQueryAsync(connection, null, SchemaSql, cancellationToken).ConfigureAwait(false);
+        await MigrateCustomerHoldingSnapshotsAddCurrentPriceIssueAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// DDE 現價無效時必須保存錯誤原因，不得只留 CurrentPrice 為 NULL 而無法追查原因。既有資料庫在
+    /// 新增本欄位前建立，CREATE TABLE IF NOT EXISTS 不會為既有資料表補上新欄位，因此以
+    /// PRAGMA table_info 檢查後用 ALTER TABLE ADD COLUMN 安全新增，不刪除或覆蓋既有資料列。
+    /// </summary>
+    private static async Task MigrateCustomerHoldingSnapshotsAddCurrentPriceIssueAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        if (await ColumnExistsAsync(connection, "CustomerHoldingSnapshots", "CurrentPriceIssue", cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        await ExecuteNonQueryAsync(
+            connection, null,
+            "ALTER TABLE CustomerHoldingSnapshots ADD COLUMN CurrentPriceIssue TEXT NULL;",
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -490,15 +509,16 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         const string sql = """
             INSERT INTO CustomerHoldingSnapshots
                 (JobId, SnapshotDate, WorkbookPath, SheetName, CustomerName, ExcelRow,
-                 StockCode, StockName, CurrentPrice, Quantity, HoldingKey, CreatedAt)
+                 StockCode, StockName, CurrentPrice, CurrentPriceIssue, Quantity, HoldingKey, CreatedAt)
             VALUES
                 ($jobId, $snapshotDate, $workbookPath, $sheetName, $customerName, $excelRow,
-                 $stockCode, $stockName, $currentPrice, $quantity, $holdingKey, $createdAt)
+                 $stockCode, $stockName, $currentPrice, $currentPriceIssue, $quantity, $holdingKey, $createdAt)
             ON CONFLICT(SnapshotDate, HoldingKey) DO UPDATE SET
                 JobId = excluded.JobId,
                 CustomerName = excluded.CustomerName,
                 StockName = excluded.StockName,
                 CurrentPrice = excluded.CurrentPrice,
+                CurrentPriceIssue = excluded.CurrentPriceIssue,
                 Quantity = excluded.Quantity,
                 CreatedAt = excluded.CreatedAt;
             """;
@@ -514,6 +534,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         command.Parameters.AddWithValue("$stockCode", holding.StockCode);
         command.Parameters.AddWithValue("$stockName", holding.StockName);
         command.Parameters.AddWithValue("$currentPrice", holding.CurrentPrice is null ? DBNull.Value : holding.CurrentPrice.Value);
+        command.Parameters.AddWithValue("$currentPriceIssue", (object?)holding.CurrentPriceIssue ?? DBNull.Value);
         command.Parameters.AddWithValue("$quantity", holding.Quantity is null ? DBNull.Value : holding.Quantity.Value);
         command.Parameters.AddWithValue("$holdingKey", holding.HoldingKey);
         command.Parameters.AddWithValue("$createdAt", ToTimestamp(_clock.GetTaipeiNow()));
@@ -680,6 +701,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
             StockCode TEXT NOT NULL,
             StockName TEXT NOT NULL,
             CurrentPrice NUMERIC NULL,
+            CurrentPriceIssue TEXT NULL,
             Quantity NUMERIC NULL,
             HoldingKey TEXT NOT NULL,
             CreatedAt TEXT NOT NULL,

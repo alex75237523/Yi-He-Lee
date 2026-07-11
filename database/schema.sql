@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS CustomerHoldingSnapshots (
     StockCode TEXT NOT NULL,                        -- 股票代碼
     StockName TEXT NOT NULL,                        -- 股票名稱
     CurrentPrice NUMERIC NULL,                      -- Excel「現價」欄位（外部 DDE）；無法判讀時為 NULL
+    CurrentPriceIssue TEXT NULL,                    -- 現價無效原因（例如 #N/A、空白、0、負數、無法解析文字）
     Quantity NUMERIC NULL,                          -- 張數
     HoldingKey TEXT NOT NULL,                       -- 持股唯一識別
     CreatedAt TEXT NOT NULL,                        -- 建立時間
@@ -207,6 +208,37 @@ CREATE TABLE IF NOT EXISTS OfficialPriceBatch (
     UpdatedAt TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS IX_OfficialPriceBatch_Target ON OfficialPriceBatch(TargetDate, SourceProvider, JobType);
+
+-- 興櫃歷史回補「已查詢但查無資料」記錄（2026-07-11 新增）。
+-- 興櫃官方端點沒有整批市場下載，只能逐檔＋逐月查詢；許多興櫃持股在較早的交易日本來就還沒開始交易，
+-- 回補迴圈往回走到那些日期時永遠查不到資料。沒有這張表時，這個「查不到」的結果不會被記住，
+-- 導致每次執行都要重新對同一批股票、同一批過去日期再問一次官方來源，白白浪費時間。
+-- 一經確認「這一天這檔查無資料」即為歷史事實、不會再改變，記錄下來後，未來執行直接略過即可。
+CREATE TABLE IF NOT EXISTS EmergingHistoricalNoDataProbe (
+    Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 流水號
+    StockCode TEXT NOT NULL,                         -- 股票代碼
+    TradeDate TEXT NOT NULL,                         -- 已查詢並確認查無資料的交易日期
+    CheckedAt TEXT NOT NULL,                         -- 查詢時間
+    CONSTRAINT UQ_EmergingHistoricalNoDataProbe UNIQUE (StockCode, TradeDate)
+);
+CREATE INDEX IF NOT EXISTS IX_EmergingHistoricalNoDataProbe_Code_Date ON EmergingHistoricalNoDataProbe(StockCode, TradeDate);
+
+-- 歷史回補已走完整個回看範圍仍不足的持股組合記錄（2026-07-11 新增）。
+-- 對近期掛牌、長期停牌或興櫃歷史端點確認查無資料的持股，同一策略日期重跑時不需重新掃描整段歷史。
+-- 僅在官方來源沒有 Failed／NotPublished 等暫時性狀態時寫入，避免把可恢復錯誤誤判為永久略過。
+CREATE TABLE IF NOT EXISTS HistoricalBackfillExhaustionProbe (
+    Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 流水號
+    TargetDate TEXT NOT NULL,                        -- 策略指定日期
+    RequiredTradingDays INTEGER NOT NULL,            -- MA120 所需有效交易日數
+    MaxLookbackCalendarDays INTEGER NOT NULL,        -- 本次回補最大回看日曆日數
+    StockSetKey TEXT NOT NULL,                       -- 上市／上櫃／興櫃持股組合雜湊
+    InsufficientSummary TEXT NOT NULL,               -- 仍不足的逐檔摘要，供 Log／畫面追查
+    CheckedAt TEXT NOT NULL,                         -- 確認時間
+    CONSTRAINT UQ_HistoricalBackfillExhaustionProbe UNIQUE
+        (TargetDate, RequiredTradingDays, MaxLookbackCalendarDays, StockSetKey)
+);
+CREATE INDEX IF NOT EXISTS IX_HistoricalBackfillExhaustionProbe_Target
+    ON HistoricalBackfillExhaustionProbe(TargetDate, RequiredTradingDays, MaxLookbackCalendarDays);
 
 -- =====================================================================
 -- 以下為「歷史收盤價」查詢畫面／使用者手動「立即回補」相關資料表（2026-07-09 新增）。

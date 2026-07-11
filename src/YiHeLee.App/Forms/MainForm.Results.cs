@@ -45,13 +45,15 @@ internal sealed partial class MainForm
     private void RenderSuccessContent(JobRunSummary summary)
     {
         var invalidCurrentPriceCount = summary.Alerts.Count(x => x.AlertKind == AlertKind.CurrentPriceInvalid);
+        var maAnomalies = summary.MovingAverageAnomalies ?? [];
         AddResultHeader(
             "Yi He Lee－每日均價判斷完成",
-            $"資料日期：{summary.TargetDate:yyyy-MM-dd}　符合條件：{summary.AlertCount} 筆　無技術資料：{summary.MissingIndicatorCount} 筆　現價異常：{invalidCurrentPriceCount} 筆",
+            $"資料日期：{summary.TargetDate:yyyy-MM-dd}　符合條件：{summary.AlertCount} 筆　均價資料異常：{maAnomalies.Count} 筆　現價異常：{invalidCurrentPriceCount} 筆",
             Color.DarkGreen);
         AddResultFooter(summary.TargetDate, "開啟 Excel", _openExcelAction);
 
         var tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(12, 6) };
+        tabs.TabPages.Add(BuildMovingAverageAnomalyTab(maAnomalies));
         tabs.TabPages.Add(BuildTriggeredTab(summary.Alerts.Where(x => x.AlertKind == AlertKind.MovingAverageTriggered).ToArray()));
         tabs.TabPages.Add(BuildCurrentPriceInvalidTab(summary.Alerts.Where(x => x.AlertKind == AlertKind.CurrentPriceInvalid).ToArray()));
         tabs.TabPages.Add(BuildMissingTab(summary.Alerts.Where(x => x.AlertKind == AlertKind.TechnicalIndicatorMissing).ToArray()));
@@ -107,6 +109,52 @@ internal sealed partial class MainForm
         panel.Controls.Add(logButton, 0, 2);
         _resultsTab.Controls.Add(panel);
         panel.BringToFront();
+    }
+
+    private static TabPage BuildMovingAverageAnomalyTab(IReadOnlyList<DailyMovingAverageSnapshot> rows)
+    {
+        var tab = new TabPage($"均價資料異常（{rows.Count}）");
+        if (rows.Count == 0)
+        {
+            tab.Controls.Add(new Label
+            {
+                Text = "今日均價前置資料沒有異常。",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Microsoft JhengHei UI", 13F, FontStyle.Bold),
+                ForeColor = Color.DarkGreen
+            });
+            return tab;
+        }
+
+        var grid = CreateGrid();
+        AddTextColumn(grid, "代碼", 85);
+        AddTextColumn(grid, "名稱", 130);
+        AddTextColumn(grid, "收盤價", 90);
+        AddTextColumn(grid, "5日均價", 90);
+        AddTextColumn(grid, "20日均價", 90);
+        AddTextColumn(grid, "60日均價", 90);
+        AddTextColumn(grid, "120日均價", 95);
+        AddTextColumn(grid, "異常", 150);
+        AddTextColumn(grid, "原因", 360, DataGridViewAutoSizeColumnMode.Fill);
+
+        foreach (var row in rows)
+        {
+            var index = grid.Rows.Add(
+                row.StockCode,
+                row.StockName,
+                FormatDecimal(row.ClosePrice),
+                FormatMa(row.MovingAverage5),
+                FormatMa(row.MovingAverage20),
+                FormatMa(row.MovingAverage60),
+                FormatMa(row.MovingAverage120),
+                DescribeCalculationStatus(row.CalculationStatus),
+                row.MissingReason ?? string.Empty);
+            grid.Rows[index].DefaultCellStyle.BackColor = Color.LightYellow;
+        }
+
+        tab.Controls.Add(grid);
+        return tab;
     }
 
     private void AddResultHeader(string title, string message, Color titleColor)
@@ -344,6 +392,14 @@ internal sealed partial class MainForm
 
     // 均線資料不足時必須顯示文字，不得顯示空白或0，避免使用者誤判為尚未抓到資料以外的狀況。
     private static string FormatMa(decimal? value) => value?.ToString("0.##") ?? "尚未抓到資料";
+
+    private static string DescribeCalculationStatus(CalculationStatus status) => status switch
+    {
+        CalculationStatus.Ok => "正常",
+        CalculationStatus.TodayCloseMissing => "當日收盤價缺失",
+        CalculationStatus.BackfillFailed => "歷史回補失敗",
+        _ => "交易日數不足"
+    };
 
     private static string ToJobStatusText(JobStatus status) => status switch
     {

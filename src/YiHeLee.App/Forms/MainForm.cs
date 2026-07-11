@@ -37,7 +37,8 @@ internal sealed partial class MainForm : Form
         _historicalPriceAction = historicalPriceAction;
         _openLogFolderAction = openLogFolderAction;
 
-        Text = "Yi He Lee";
+        // 主畫面標題顯示簡短版本與 Git Commit SHA，方便確認目前啟動的不是舊資料夾裡的舊 EXE。
+        Text = $"Yi He Lee － {BuildInfo.ShortDescription}";
         StartPosition = FormStartPosition.CenterScreen;
         // 尺寸以 96 DPI 為基準，高 DPI 螢幕下整體等比放大，避免字型放大但欄寬不變造成破版。
         AutoScaleDimensions = new SizeF(96F, 96F);

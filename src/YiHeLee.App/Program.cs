@@ -33,6 +33,10 @@ internal static class Program
         var clock = new TaipeiClock();
         var validationService = new SettingsValidationService();
         var settingsStore = new JsonSettingsStore(paths.SettingsPath, validationService);
+
+        // 啟動時立即記錄實際版本、Git Commit SHA、Build 時間與各項完整路徑，方便確認目前啟動的
+        // 不是舊資料夾裡的舊 EXE。Excel 路徑取自設定檔，設定檔不存在時 LoadAsync 會建立預設值。
+        LogStartupBuildInfo(paths, settingsStore, logger);
         var repository = new SqliteYiHeLeeRepository(paths.DatabasePath, clock);
         var marketDataRepository = new SqliteMarketDataRepository(paths.DatabasePath, clock);
         var userInteraction = new WinFormsUserInteraction();
@@ -123,6 +127,31 @@ internal static class Program
             try { scheduleCoordinator.StopAsync().GetAwaiter().GetResult(); } catch { }
             try { cnyesCrawler.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
         }
+    }
+
+    private static void LogStartupBuildInfo(AppPaths paths, JsonSettingsStore settingsStore, FileAppLogger logger)
+    {
+        string workbookPath;
+        try
+        {
+            var settings = settingsStore.LoadAsync().GetAwaiter().GetResult();
+            workbookPath = string.IsNullOrWhiteSpace(settings.WorkbookPath) ? "（尚未設定）" : settings.WorkbookPath;
+        }
+        catch (Exception ex)
+        {
+            workbookPath = $"（讀取設定失敗：{ex.Message}）";
+        }
+
+        logger.Info(
+            "程式啟動。" +
+            $" 程式版本={BuildInfo.Version}；" +
+            $" Git Commit SHA={BuildInfo.GitCommitSha}；" +
+            $" Git 分支={BuildInfo.GitBranch}；" +
+            $" Build 時間(UTC)={BuildInfo.BuildTimeUtc}；" +
+            $" 執行檔完整路徑={BuildInfo.ExecutablePath}；" +
+            $" SQLite 完整路徑={paths.DatabasePath}；" +
+            $" Excel 完整路徑={workbookPath}；" +
+            $" 是否為 Publish 腳本產生={BuildInfo.IsFromPublishScript}");
     }
 
     private static void RegisterOfficeInteropAssemblyResolver()

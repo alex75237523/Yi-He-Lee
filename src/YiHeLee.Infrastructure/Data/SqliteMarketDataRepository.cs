@@ -341,6 +341,33 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
         return result;
     }
 
+    public async Task<IReadOnlyList<string>> GetStockCodesWithDailyPriceAsync(
+        DateOnly tradeDate,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT s.StockCode
+            FROM StockDailyPrice p
+            INNER JOIN StockMaster s ON s.Id = p.StockId
+            WHERE p.TradeDate = $tradeDate
+            ORDER BY s.StockCode;
+            """;
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$tradeDate", ToDate(tradeDate));
+
+        var result = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add(reader.GetString(0));
+        }
+
+        return result;
+    }
+
     public async Task SaveMovingAverageResultsAsync(
         DateOnly tradeDate,
         IReadOnlyList<MovingAverageResult> results,
@@ -447,6 +474,84 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
                 (CalculationStatus)reader.GetInt32(8),
                 reader.IsDBNull(9) ? null : DateOnly.ParseExact(reader.GetString(9), "yyyy-MM-dd", CultureInfo.InvariantCulture),
                 reader.IsDBNull(10) ? null : reader.GetString(10)));
+        }
+
+        return result;
+    }
+
+    public async Task<IReadOnlyList<DailyMovingAverageSnapshot>> GetMovingAverageSnapshotsAsync(
+        DateOnly tradeDate,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT m.TradeDate, s.StockCode, s.StockName, m.ClosePrice, m.Ma5, m.Ma20, m.Ma60, m.Ma120,
+                   m.CalculationStatus, m.MissingReason
+            FROM StockMovingAverage m
+            INNER JOIN StockMaster s ON s.Id = m.StockId
+            WHERE m.TradeDate = $tradeDate
+            ORDER BY s.StockCode;
+            """;
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$tradeDate", ToDate(tradeDate));
+
+        var result = new List<DailyMovingAverageSnapshot>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add(new DailyMovingAverageSnapshot(
+                DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetDecimal(3),
+                reader.IsDBNull(4) ? null : reader.GetDecimal(4),
+                reader.IsDBNull(5) ? null : reader.GetDecimal(5),
+                reader.IsDBNull(6) ? null : reader.GetDecimal(6),
+                reader.IsDBNull(7) ? null : reader.GetDecimal(7),
+                (CalculationStatus)reader.GetInt32(8),
+                reader.IsDBNull(9) ? null : reader.GetString(9)));
+        }
+
+        return result;
+    }
+
+    public async Task<IReadOnlyList<DailyMovingAverageSnapshot>> GetMovingAverageAnomaliesAsync(
+        DateOnly tradeDate,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT m.TradeDate, s.StockCode, s.StockName, m.ClosePrice, m.Ma5, m.Ma20, m.Ma60, m.Ma120,
+                   m.CalculationStatus, m.MissingReason
+            FROM StockMovingAverage m
+            INNER JOIN StockMaster s ON s.Id = m.StockId
+            WHERE m.TradeDate = $tradeDate
+              AND m.CalculationStatus <> $okStatus
+            ORDER BY s.StockCode;
+            """;
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$tradeDate", ToDate(tradeDate));
+        command.Parameters.AddWithValue("$okStatus", (int)CalculationStatus.Ok);
+
+        var result = new List<DailyMovingAverageSnapshot>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add(new DailyMovingAverageSnapshot(
+                DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetDecimal(3),
+                reader.IsDBNull(4) ? null : reader.GetDecimal(4),
+                reader.IsDBNull(5) ? null : reader.GetDecimal(5),
+                reader.IsDBNull(6) ? null : reader.GetDecimal(6),
+                reader.IsDBNull(7) ? null : reader.GetDecimal(7),
+                (CalculationStatus)reader.GetInt32(8),
+                reader.IsDBNull(9) ? null : reader.GetString(9)));
         }
 
         return result;
@@ -573,6 +678,26 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
         return count > 0;
     }
 
+    public async Task<bool> HasResolvedHolidayBatchAsync(
+        DateOnly targetDate,
+        string sourceProvider,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1) FROM OfficialPriceBatch
+            WHERE JobType = $jobType AND TargetDate = $targetDate AND SourceProvider = $sourceProvider AND Status = $status;
+            """;
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$jobType", (int)OfficialPriceJobType.HistoricalBackfill);
+        command.Parameters.AddWithValue("$targetDate", ToDate(targetDate));
+        command.Parameters.AddWithValue("$sourceProvider", sourceProvider);
+        command.Parameters.AddWithValue("$status", (int)OfficialPriceBatchStatus.Holiday);
+        var count = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+        return count > 0;
+    }
+
     public async Task<StockDailyPriceQueryResult> QueryDailyPricesAsync(
         StockDailyPriceQueryFilter filter,
         CancellationToken cancellationToken)
@@ -680,6 +805,232 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
         command.CommandText = sql;
         var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return value is null or DBNull ? null : DateOnly.ParseExact((string)value, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    public async Task<IReadOnlySet<string>> GetConfirmedNoEmergingDataCodesAsync(
+        DateOnly tradeDate,
+        IReadOnlyCollection<string> stockCodes,
+        CancellationToken cancellationToken)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var codes = stockCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (codes.Length == 0)
+        {
+            return result;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        var parameterNames = codes.Select((_, index) => $"$code{index}").ToArray();
+        command.CommandText = $"""
+            SELECT StockCode FROM EmergingHistoricalNoDataProbe
+            WHERE TradeDate = $tradeDate AND StockCode IN ({string.Join(",", parameterNames)});
+            """;
+        command.Parameters.AddWithValue("$tradeDate", ToDate(tradeDate));
+        for (var i = 0; i < codes.Length; i++)
+        {
+            command.Parameters.AddWithValue(parameterNames[i], codes[i]);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add(reader.GetString(0));
+        }
+
+        return result;
+    }
+
+    public async Task RecordConfirmedNoEmergingDataAsync(
+        DateOnly tradeDate,
+        IReadOnlyCollection<string> stockCodes,
+        DateTimeOffset checkedAt,
+        CancellationToken cancellationToken)
+    {
+        var codes = stockCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (codes.Length == 0)
+        {
+            return;
+        }
+
+        const string sql = """
+            INSERT INTO EmergingHistoricalNoDataProbe (StockCode, TradeDate, CheckedAt)
+            VALUES ($stockCode, $tradeDate, $checkedAt)
+            ON CONFLICT(StockCode, TradeDate) DO UPDATE SET CheckedAt = excluded.CheckedAt;
+            """;
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var code in codes)
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = sql;
+                command.Parameters.AddWithValue("$stockCode", code);
+                command.Parameters.AddWithValue("$tradeDate", ToDate(tradeDate));
+                command.Parameters.AddWithValue("$checkedAt", ToTimestamp(checkedAt));
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public async Task<bool> HasExhaustedHistoricalBackfillProbeAsync(
+        DateOnly targetDate,
+        int requiredTradingDays,
+        int maxLookbackCalendarDays,
+        string stockSetKey,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1) FROM HistoricalBackfillExhaustionProbe
+            WHERE TargetDate = $targetDate
+              AND RequiredTradingDays = $requiredTradingDays
+              AND MaxLookbackCalendarDays = $maxLookbackCalendarDays
+              AND StockSetKey = $stockSetKey;
+            """;
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$targetDate", ToDate(targetDate));
+        command.Parameters.AddWithValue("$requiredTradingDays", requiredTradingDays);
+        command.Parameters.AddWithValue("$maxLookbackCalendarDays", maxLookbackCalendarDays);
+        command.Parameters.AddWithValue("$stockSetKey", stockSetKey);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) > 0;
+    }
+
+    public async Task RecordExhaustedHistoricalBackfillProbeAsync(
+        DateOnly targetDate,
+        int requiredTradingDays,
+        int maxLookbackCalendarDays,
+        string stockSetKey,
+        string insufficientSummary,
+        DateTimeOffset checkedAt,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO HistoricalBackfillExhaustionProbe
+                (TargetDate, RequiredTradingDays, MaxLookbackCalendarDays, StockSetKey, InsufficientSummary, CheckedAt)
+            VALUES
+                ($targetDate, $requiredTradingDays, $maxLookbackCalendarDays, $stockSetKey, $insufficientSummary, $checkedAt)
+            ON CONFLICT(TargetDate, RequiredTradingDays, MaxLookbackCalendarDays, StockSetKey)
+            DO UPDATE SET
+                InsufficientSummary = excluded.InsufficientSummary,
+                CheckedAt = excluded.CheckedAt;
+            """;
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$targetDate", ToDate(targetDate));
+        command.Parameters.AddWithValue("$requiredTradingDays", requiredTradingDays);
+        command.Parameters.AddWithValue("$maxLookbackCalendarDays", maxLookbackCalendarDays);
+        command.Parameters.AddWithValue("$stockSetKey", stockSetKey);
+        command.Parameters.AddWithValue("$insufficientSummary", insufficientSummary);
+        command.Parameters.AddWithValue("$checkedAt", ToTimestamp(checkedAt));
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlySet<string>> GetKnownInsufficientHistoryStockCodesAsync(
+        int requiredTradingDays,
+        int maxLookbackCalendarDays,
+        IReadOnlyCollection<string> stockCodes,
+        CancellationToken cancellationToken)
+    {
+        var codes = stockCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (codes.Length == 0)
+        {
+            return result;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        var parameterNames = codes.Select((_, index) => $"$code{index}").ToArray();
+        command.CommandText = $"""
+            SELECT StockCode
+            FROM HistoricalBackfillStockException
+            WHERE RequiredTradingDays = $requiredTradingDays
+              AND MaxLookbackCalendarDays = $maxLookbackCalendarDays
+              AND StockCode IN ({string.Join(",", parameterNames)});
+            """;
+        command.Parameters.AddWithValue("$requiredTradingDays", requiredTradingDays);
+        command.Parameters.AddWithValue("$maxLookbackCalendarDays", maxLookbackCalendarDays);
+        for (var i = 0; i < codes.Length; i++)
+        {
+            command.Parameters.AddWithValue(parameterNames[i], codes[i]);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add(reader.GetString(0));
+        }
+
+        return result;
+    }
+
+    public async Task RecordKnownInsufficientHistoryStockCodesAsync(
+        IReadOnlyList<HistoricalBackfillStockException> exceptions,
+        CancellationToken cancellationToken)
+    {
+        if (exceptions.Count == 0)
+        {
+            return;
+        }
+
+        const string sql = """
+            INSERT INTO HistoricalBackfillStockException
+                (StockCode, MarketType, RequiredTradingDays, MaxLookbackCalendarDays,
+                 AvailableTradingDayCount, TargetDate, Reason, CheckedAt)
+            VALUES
+                ($stockCode, $marketType, $requiredTradingDays, $maxLookbackCalendarDays,
+                 $availableTradingDayCount, $targetDate, $reason, $checkedAt)
+            ON CONFLICT(StockCode, RequiredTradingDays, MaxLookbackCalendarDays)
+            DO UPDATE SET
+                MarketType = excluded.MarketType,
+                AvailableTradingDayCount = excluded.AvailableTradingDayCount,
+                TargetDate = excluded.TargetDate,
+                Reason = excluded.Reason,
+                CheckedAt = excluded.CheckedAt;
+            """;
+
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var item in exceptions)
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = sql;
+                command.Parameters.AddWithValue("$stockCode", item.StockCode);
+                command.Parameters.AddWithValue("$marketType", (int)item.MarketType);
+                command.Parameters.AddWithValue("$requiredTradingDays", item.RequiredTradingDays);
+                command.Parameters.AddWithValue("$maxLookbackCalendarDays", item.MaxLookbackCalendarDays);
+                command.Parameters.AddWithValue("$availableTradingDayCount", item.AvailableTradingDayCount);
+                command.Parameters.AddWithValue("$targetDate", ToDate(item.TargetDate));
+                command.Parameters.AddWithValue("$reason", item.Reason);
+                command.Parameters.AddWithValue("$checkedAt", ToTimestamp(item.CheckedAt));
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private static MarketType ToMarketType(MarketScope scope) => scope switch
@@ -835,5 +1186,32 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
             UpdatedAt TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS IX_OfficialPriceBatch_Target ON OfficialPriceBatch(TargetDate, SourceProvider, JobType);
+
+        -- 興櫃歷史回補「已查詢但查無資料」記錄（2026-07-11 新增，見 database/schema.sql 同步說明）。
+        CREATE TABLE IF NOT EXISTS EmergingHistoricalNoDataProbe (
+            Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 流水號
+            StockCode TEXT NOT NULL,                         -- 股票代碼
+            TradeDate TEXT NOT NULL,                         -- 已查詢並確認查無資料的交易日期
+            CheckedAt TEXT NOT NULL,                         -- 查詢時間
+            CONSTRAINT UQ_EmergingHistoricalNoDataProbe UNIQUE (StockCode, TradeDate)
+        );
+        CREATE INDEX IF NOT EXISTS IX_EmergingHistoricalNoDataProbe_Code_Date ON EmergingHistoricalNoDataProbe(StockCode, TradeDate);
+
+        -- 歷史回補已走完整個回看範圍仍不足的持股組合記錄（2026-07-11 新增）。
+        -- 例如近期掛牌、停牌或興櫃歷史端點確認查無資料的股票，即使重跑同一策略日期也不可能補滿 MA120；
+        -- 記錄後同日同設定同持股組合可略過重複掃描。官方來源 Failed／NotPublished 時不得寫入本表。
+        CREATE TABLE IF NOT EXISTS HistoricalBackfillExhaustionProbe (
+            Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 流水號
+            TargetDate TEXT NOT NULL,                        -- 策略指定日期
+            RequiredTradingDays INTEGER NOT NULL,            -- MA120 所需有效交易日數
+            MaxLookbackCalendarDays INTEGER NOT NULL,        -- 本次回補最大回看日曆日數
+            StockSetKey TEXT NOT NULL,                       -- 上市／上櫃／興櫃持股組合雜湊
+            InsufficientSummary TEXT NOT NULL,               -- 仍不足的逐檔摘要，供 Log／畫面追查
+            CheckedAt TEXT NOT NULL,                         -- 確認時間
+            CONSTRAINT UQ_HistoricalBackfillExhaustionProbe UNIQUE
+                (TargetDate, RequiredTradingDays, MaxLookbackCalendarDays, StockSetKey)
+        );
+        CREATE INDEX IF NOT EXISTS IX_HistoricalBackfillExhaustionProbe_Target
+            ON HistoricalBackfillExhaustionProbe(TargetDate, RequiredTradingDays, MaxLookbackCalendarDays);
         """;
 }

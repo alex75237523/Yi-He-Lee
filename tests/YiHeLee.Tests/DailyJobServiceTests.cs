@@ -66,6 +66,35 @@ public sealed class DailyJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task 進場價平均價無效時_不影響官方價格與均線計算_且與現價異常分開通知()
+    {
+        // 「進場價/平均價」不是 DDE 欄位，異常時的隔離規則必須與「現價」異常一致：
+        // 不得中斷官方收盤價擷取、均線計算，且必須產生獨立的 EntryAveragePriceInvalid 通知。
+        var holding = CreateHolding("2330", "台積電", currentPrice: 900m, entryAveragePrice: null, entryAveragePriceIssue: "儲存格為空白，無法讀取進場價/平均價");
+        var ma = FullHistoryMovingAverage("2330", close: 900m, ma5: 890m, ma20: 880m, ma60: 870m, ma120: 860m);
+
+        var (service, excel, marketPrice, movingAverage, repository, _) = CreateService(
+            [holding],
+            new Dictionary<string, MovingAverageResult>(StringComparer.OrdinalIgnoreCase) { ["2330"] = ma },
+            new Dictionary<string, MarketType>(StringComparer.OrdinalIgnoreCase) { ["2330"] = MarketType.Listed });
+
+        var summary = await service.RunAsync(isManualRun: true, CancellationToken.None, TradeDate);
+
+        Assert.Equal(RunOutcome.Success, summary.Outcome);
+        Assert.True(marketPrice.FetchDailyCallCount >= 1, "官方每日收盤價必須照常擷取，不得因進場價/平均價無效而略過。");
+        Assert.True(movingAverage.CallCount >= 1, "均線必須照常計算。");
+
+        var row = Assert.Single(excel.WrittenResults!);
+        Assert.Equal(890m, row.MovingAverage5);
+
+        Assert.Contains(repository.SavedAlerts, x => x.AlertKind == AlertKind.EntryAveragePriceInvalid);
+        Assert.DoesNotContain(repository.SavedAlerts, x => x.AlertKind == AlertKind.CurrentPriceInvalid);
+        var alert = Assert.Single(repository.SavedAlerts, x => x.AlertKind == AlertKind.EntryAveragePriceInvalid);
+        Assert.Equal(900m, alert.CurrentPrice);
+        Assert.Null(alert.EntryAveragePrice);
+    }
+
+    [Fact]
     public async Task 單一持股DDE錯誤不影響其他持股的官方價格與均線計算()
     {
         var holdingA = CreateHolding("2330", "台積電", currentPrice: 900m); // DDE 正常
@@ -212,7 +241,12 @@ public sealed class DailyJobServiceTests : IDisposable
         Assert.DoesNotContain(excel.WrittenResults!, x => x.StockCode == "10037677");
     }
 
-    private static CustomerHolding CreateHolding(string code, string name, decimal? currentPrice, string? currentPriceIssue = null) => new(
+    // entryAveragePrice 預設為極大值：本測試檔案聚焦於「現價（DDE）異常隔離」，與進場價/平均價無關；
+    // 極大預設值確保只要現價本身足以觸發（舊版單一價格語意），雙價格判斷（進場價/平均價 AND 現價）
+    // 也會成立，不需逐一修改每個既有呼叫點的進場價/平均價。
+    private static CustomerHolding CreateHolding(
+        string code, string name, decimal? currentPrice, string? currentPriceIssue = null,
+        decimal? entryAveragePrice = 999_999m, string? entryAveragePriceIssue = null) => new(
         TradeDate,
         @"C:\Data\客戶.xlsx",
         "客戶頁籤",
@@ -223,7 +257,9 @@ public sealed class DailyJobServiceTests : IDisposable
         currentPrice,
         10,
         $"key-{code}",
-        currentPriceIssue);
+        currentPriceIssue,
+        entryAveragePrice,
+        entryAveragePriceIssue);
 
     private static MovingAverageResult FullHistoryMovingAverage(string code, decimal close, decimal ma5, decimal ma20, decimal ma60, decimal ma120) => new(
         code, TradeDate, close, ma5, ma20, ma60, ma120, 120, CalculationStatus.Ok, TradeDate);

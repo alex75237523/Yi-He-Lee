@@ -201,6 +201,14 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                         _logger.Warning($"頁籤「{worksheet.Name}」第 {absoluteRow} 列股票 {stockCode} 的現價無法判讀：{currentPrice.Issue}。");
                     }
 
+                    // 「進場價/平均價」與「現價」是兩個完全獨立的欄位，不是 DDE 欄位，必須分開解析，
+                    // 不得混用、不得互相代替，也不得只取其中一個判斷。
+                    var entryAveragePrice = EntryAveragePriceCellParser.Parse(accessor.GetValue(relativeRow, header.EntryAveragePriceColumn));
+                    if (!entryAveragePrice.IsValid)
+                    {
+                        _logger.Warning($"頁籤「{worksheet.Name}」第 {absoluteRow} 列股票 {stockCode} 的進場價/平均價無法判讀：{entryAveragePrice.Issue}。");
+                    }
+
                     decimal? quantity = null;
                     if (header.QuantityColumn is not null
                         && TryGetDecimal(accessor.GetValue(relativeRow, header.QuantityColumn.Value), out var parsedQuantity))
@@ -225,7 +233,9 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                         currentPrice.Price,
                         quantity,
                         holdingKey,
-                        currentPrice.Issue));
+                        currentPrice.Issue,
+                        entryAveragePrice.Price,
+                        entryAveragePrice.Issue));
                 }
             }
 
@@ -575,6 +585,14 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
     private static readonly HashSet<string> CurrentPriceHeaderSynonyms = new(StringComparer.Ordinal) { "現價", "現貨現價" };
 
     /// <summary>
+    /// 「進場價/平均價」欄位可接受的表頭同義字。<see cref="NormalizeHeader"/> 已將全形斜線「／」正規化為
+    /// 半形「/」並移除空白，因此「進場價/平均價」與「進場價／平均價」皆可比對到同一個字串。
+    /// 這是與「現價」完全獨立的欄位，不得混用；除非再次以實際客戶工作簿確認，不得任意新增過寬的同義字，
+    /// 避免把投入資金、損益等其他金額欄位誤認為進場價。
+    /// </summary>
+    private static readonly HashSet<string> EntryAveragePriceHeaderSynonyms = new(StringComparer.Ordinal) { "進場價/平均價" };
+
+    /// <summary>
     /// 非持股表格的常見表頭關鍵字（日期、權益數、保證金、小計、總計等）。一列若出現任兩個（或以上）
     /// 這類關鍵字，視為其他表格（例如權益數／保證金彙總表）的表頭列，作為持股區塊的結束邊界，
     /// 避免上一段持股表格一路往下掃描、把其他表格內容誤判為持股列。
@@ -594,6 +612,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
             int? code = null;
             int? name = null;
             int? current = null;
+            int? entryAveragePrice = null;
             int? quantity = null;
             var containsExitPrice = false;
             var otherTableKeywordHits = 0;
@@ -604,19 +623,21 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 if (text is "代號" or "代碼" or "股票代碼") code = column;
                 if (text is "股名" or "名稱" or "股票名稱") name = column;
                 if (CurrentPriceHeaderSynonyms.Contains(text)) current = column;
+                if (EntryAveragePriceHeaderSynonyms.Contains(text)) entryAveragePrice = column;
                 if (text == "張數") quantity = column;
                 if (text.Contains("出場價", StringComparison.Ordinal)) containsExitPrice = true;
                 if (Array.IndexOf(OtherTableHeaderKeywords, text) >= 0) otherTableKeywordHits++;
             }
 
             // 已出場表頭也要記錄為區塊邊界，避免上一個持股區塊一路掃描到已出場資料。
-            if (code is not null && name is not null && (current is not null || containsExitPrice))
+            if (code is not null && name is not null && (current is not null || entryAveragePrice is not null || containsExitPrice))
             {
                 candidates.Add(new TableHeaderCandidate(
                     row,
                     code.Value,
                     name.Value,
                     current,
+                    entryAveragePrice,
                     quantity,
                     containsExitPrice));
                 continue;
@@ -634,7 +655,9 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         for (var index = 0; index < candidates.Count; index++)
         {
             var candidate = candidates[index];
-            if (candidate.ContainsExitPrice || candidate.CurrentPriceColumn is null)
+            // 有效持股表頭必須同時找到「進場價/平均價」與「現價」兩個獨立欄位，缺一不可；
+            // 已出場表頭一律排除，不當成持股區塊。
+            if (candidate.ContainsExitPrice || candidate.CurrentPriceColumn is null || candidate.EntryAveragePriceColumn is null)
             {
                 continue;
             }
@@ -648,6 +671,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
                 candidate.CodeColumn,
                 candidate.NameColumn,
                 candidate.CurrentPriceColumn.Value,
+                candidate.EntryAveragePriceColumn.Value,
                 candidate.QuantityColumn));
         }
 
@@ -797,6 +821,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         int CodeColumn,
         int NameColumn,
         int? CurrentPriceColumn,
+        int? EntryAveragePriceColumn,
         int? QuantityColumn,
         bool ContainsExitPrice);
 
@@ -806,6 +831,7 @@ public sealed partial class ExcelWorkbookService : IExcelWorkbookService
         int CodeColumn,
         int NameColumn,
         int CurrentPriceColumn,
+        int EntryAveragePriceColumn,
         int? QuantityColumn);
 
     internal sealed class CellValueAccessor

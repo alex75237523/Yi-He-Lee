@@ -31,6 +31,8 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         await MigrateEntryAveragePriceToCurrentPriceAsync(connection, cancellationToken).ConfigureAwait(false);
         await ExecuteNonQueryAsync(connection, null, SchemaSql, cancellationToken).ConfigureAwait(false);
         await MigrateCustomerHoldingSnapshotsAddCurrentPriceIssueAsync(connection, cancellationToken).ConfigureAwait(false);
+        await MigrateCustomerHoldingSnapshotsAddEntryAveragePriceAsync(connection, cancellationToken).ConfigureAwait(false);
+        await MigrateStrategyAlertsAddEntryAveragePriceAndUniqueKeyAsync(connection, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -52,10 +54,73 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
     }
 
     /// <summary>
+    /// 2026-07-11 需求恢復：客戶 Excel「進場價/平均價」與「現價」是兩個必須同時判斷的獨立欄位，
+    /// 因此在 <see cref="CustomerHoldingSnapshots"/> 新增 EntryAveragePrice／EntryAveragePriceIssue 欄位，
+    /// 以既有 PRAGMA table_info 檢查後 ALTER TABLE ADD COLUMN 安全新增，不刪除或覆蓋既有資料列。
+    /// </summary>
+    private static async Task MigrateCustomerHoldingSnapshotsAddEntryAveragePriceAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        if (!await ColumnExistsAsync(connection, "CustomerHoldingSnapshots", "EntryAveragePrice", cancellationToken).ConfigureAwait(false))
+        {
+            await ExecuteNonQueryAsync(
+                connection, null,
+                "ALTER TABLE CustomerHoldingSnapshots ADD COLUMN EntryAveragePrice NUMERIC NULL;",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!await ColumnExistsAsync(connection, "CustomerHoldingSnapshots", "EntryAveragePriceIssue", cancellationToken).ConfigureAwait(false))
+        {
+            await ExecuteNonQueryAsync(
+                connection, null,
+                "ALTER TABLE CustomerHoldingSnapshots ADD COLUMN EntryAveragePriceIssue TEXT NULL;",
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// 2026-07-11 需求恢復：同一筆持股現在可能同時產生「進場價/平均價異常」與「現價異常」兩筆通知；
+    /// 舊唯一鍵 (TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode) 只以股票識別、不含 AlertKind，
+    /// 會讓後寫入的通知覆蓋先寫入的通知。SQLite 無法直接修改既有 UNIQUE 約束，因此在唯一鍵新增
+    /// AlertKind 的同時，採「改名舊表→由 SchemaSql 建新表→搬移→刪舊表」方式重建，並同時新增
+    /// EntryAveragePrice／EntryAveragePriceIssue／CurrentPriceIssue 欄位；舊資料列原樣搬移，新欄位為 NULL。
+    /// </summary>
+    private static async Task MigrateStrategyAlertsAddEntryAveragePriceAndUniqueKeyAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        if (await ColumnExistsAsync(connection, "StrategyAlerts", "EntryAveragePrice", cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        const string copySql = """
+            INSERT INTO StrategyAlerts
+                (Id, JobId, TradeDate, AlertKind, WorkbookPath, SheetName, CustomerName, ExcelRow,
+                 StockCode, StockName, CurrentPrice, Quantity, ClosePrice,
+                 MovingAverage5, MovingAverage20, MovingAverage60, MovingAverage120,
+                 TriggeredMa5, TriggeredMa20, TriggeredMa120, TriggerDescription,
+                 MarketType, IndicatorType, SourceUrl, CreatedAt, UpdatedAt)
+            SELECT Id, JobId, TradeDate, AlertKind, WorkbookPath, SheetName, CustomerName, ExcelRow,
+                   StockCode, StockName, CurrentPrice, Quantity, ClosePrice,
+                   MovingAverage5, MovingAverage20, MovingAverage60, MovingAverage120,
+                   TriggeredMa5, TriggeredMa20, TriggeredMa120, TriggerDescription,
+                   MarketType, IndicatorType, SourceUrl, CreatedAt, UpdatedAt
+            FROM StrategyAlerts_Legacy;
+            """;
+
+        await ExecuteNonQueryAsync(connection, null, "ALTER TABLE StrategyAlerts RENAME TO StrategyAlerts_Legacy;", cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(connection, null, SchemaSql, cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(connection, null, copySql, cancellationToken).ConfigureAwait(false);
+        await ExecuteNonQueryAsync(connection, null, "DROP TABLE StrategyAlerts_Legacy;", cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// 2026-07-11 需求更正：策略比較基準由「進場價／平均價」改為 Excel「現價」欄位（外部 DDE），
     /// 舊資料庫的 EntryAveragePrice 欄位改名為 CurrentPrice 並允許 NULL（現價無效的通知列沒有價格）。
     /// 舊列的值原樣保留（當時比較基準為進場價，僅屬歷史紀錄）。SQLite 無法直接卸除 NOT NULL，
     /// 因此以「改名舊表→由 SchemaSql 建新表→搬移→刪舊表」方式重建。
+    /// 2026-07-11 之後另新增真正的 EntryAveragePrice 欄位（見 <see cref="MigrateCustomerHoldingSnapshotsAddEntryAveragePriceAsync"/>／
+    /// <see cref="MigrateStrategyAlertsAddEntryAveragePriceAndUniqueKeyAsync"/>），欄位名稱恰好與本次歷史搬移
+    /// 使用的舊欄位名稱相同；因此本方法額外檢查 CurrentPrice 是否已存在，只有「確實是尚未改名的舊格式
+    /// （沒有 CurrentPrice）」才觸發搬移，避免把新版真正的 EntryAveragePrice 資料誤判為舊格式並覆蓋 CurrentPrice。
     /// </summary>
     private static async Task MigrateEntryAveragePriceToCurrentPriceAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -87,7 +152,9 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
 
         foreach (var (table, copySql) in migrations)
         {
-            if (!await ColumnExistsAsync(connection, table, "EntryAveragePrice", cancellationToken).ConfigureAwait(false))
+            var hasLegacyEntryAveragePrice = await ColumnExistsAsync(connection, table, "EntryAveragePrice", cancellationToken).ConfigureAwait(false);
+            var alreadyMigratedToCurrentPrice = await ColumnExistsAsync(connection, table, "CurrentPrice", cancellationToken).ConfigureAwait(false);
+            if (!hasLegacyEntryAveragePrice || alreadyMigratedToCurrentPrice)
             {
                 continue;
             }
@@ -509,16 +576,20 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         const string sql = """
             INSERT INTO CustomerHoldingSnapshots
                 (JobId, SnapshotDate, WorkbookPath, SheetName, CustomerName, ExcelRow,
-                 StockCode, StockName, CurrentPrice, CurrentPriceIssue, Quantity, HoldingKey, CreatedAt)
+                 StockCode, StockName, CurrentPrice, CurrentPriceIssue,
+                 EntryAveragePrice, EntryAveragePriceIssue, Quantity, HoldingKey, CreatedAt)
             VALUES
                 ($jobId, $snapshotDate, $workbookPath, $sheetName, $customerName, $excelRow,
-                 $stockCode, $stockName, $currentPrice, $currentPriceIssue, $quantity, $holdingKey, $createdAt)
+                 $stockCode, $stockName, $currentPrice, $currentPriceIssue,
+                 $entryAveragePrice, $entryAveragePriceIssue, $quantity, $holdingKey, $createdAt)
             ON CONFLICT(SnapshotDate, HoldingKey) DO UPDATE SET
                 JobId = excluded.JobId,
                 CustomerName = excluded.CustomerName,
                 StockName = excluded.StockName,
                 CurrentPrice = excluded.CurrentPrice,
                 CurrentPriceIssue = excluded.CurrentPriceIssue,
+                EntryAveragePrice = excluded.EntryAveragePrice,
+                EntryAveragePriceIssue = excluded.EntryAveragePriceIssue,
                 Quantity = excluded.Quantity,
                 CreatedAt = excluded.CreatedAt;
             """;
@@ -535,6 +606,8 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         command.Parameters.AddWithValue("$stockName", holding.StockName);
         command.Parameters.AddWithValue("$currentPrice", holding.CurrentPrice is null ? DBNull.Value : holding.CurrentPrice.Value);
         command.Parameters.AddWithValue("$currentPriceIssue", (object?)holding.CurrentPriceIssue ?? DBNull.Value);
+        command.Parameters.AddWithValue("$entryAveragePrice", holding.EntryAveragePrice is null ? DBNull.Value : holding.EntryAveragePrice.Value);
+        command.Parameters.AddWithValue("$entryAveragePriceIssue", (object?)holding.EntryAveragePriceIssue ?? DBNull.Value);
         command.Parameters.AddWithValue("$quantity", holding.Quantity is null ? DBNull.Value : holding.Quantity.Value);
         command.Parameters.AddWithValue("$holdingKey", holding.HoldingKey);
         command.Parameters.AddWithValue("$createdAt", ToTimestamp(_clock.GetTaipeiNow()));
@@ -546,22 +619,26 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         const string sql = """
             INSERT INTO StrategyAlerts
                 (JobId, TradeDate, AlertKind, WorkbookPath, SheetName, CustomerName, ExcelRow,
-                 StockCode, StockName, CurrentPrice, Quantity, ClosePrice,
+                 StockCode, StockName, CurrentPrice, CurrentPriceIssue,
+                 EntryAveragePrice, EntryAveragePriceIssue, Quantity, ClosePrice,
                  MovingAverage5, MovingAverage20, MovingAverage60, MovingAverage120,
                  TriggeredMa5, TriggeredMa20, TriggeredMa120, TriggerDescription,
                  MarketType, IndicatorType, SourceUrl, CreatedAt, UpdatedAt)
             VALUES
                 ($jobId, $tradeDate, $alertKind, $workbookPath, $sheetName, $customerName, $excelRow,
-                 $stockCode, $stockName, $currentPrice, $quantity, $closePrice,
+                 $stockCode, $stockName, $currentPrice, $currentPriceIssue,
+                 $entryAveragePrice, $entryAveragePriceIssue, $quantity, $closePrice,
                  $ma5, $ma20, $ma60, $ma120,
                  $triggeredMa5, $triggeredMa20, $triggeredMa120, $description,
                  $marketType, $indicatorType, $sourceUrl, $now, $now)
-            ON CONFLICT(TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode) DO UPDATE SET
+            ON CONFLICT(TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode, AlertKind) DO UPDATE SET
                 JobId = excluded.JobId,
-                AlertKind = excluded.AlertKind,
                 CustomerName = excluded.CustomerName,
                 StockName = excluded.StockName,
                 CurrentPrice = excluded.CurrentPrice,
+                CurrentPriceIssue = excluded.CurrentPriceIssue,
+                EntryAveragePrice = excluded.EntryAveragePrice,
+                EntryAveragePriceIssue = excluded.EntryAveragePriceIssue,
                 Quantity = excluded.Quantity,
                 ClosePrice = excluded.ClosePrice,
                 MovingAverage5 = excluded.MovingAverage5,
@@ -590,6 +667,9 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
         command.Parameters.AddWithValue("$stockCode", alert.StockCode);
         command.Parameters.AddWithValue("$stockName", alert.StockName);
         command.Parameters.AddWithValue("$currentPrice", alert.CurrentPrice is null ? DBNull.Value : alert.CurrentPrice.Value);
+        command.Parameters.AddWithValue("$currentPriceIssue", (object?)alert.CurrentPriceIssue ?? DBNull.Value);
+        command.Parameters.AddWithValue("$entryAveragePrice", alert.EntryAveragePrice is null ? DBNull.Value : alert.EntryAveragePrice.Value);
+        command.Parameters.AddWithValue("$entryAveragePriceIssue", (object?)alert.EntryAveragePriceIssue ?? DBNull.Value);
         command.Parameters.AddWithValue("$quantity", alert.Quantity is null ? DBNull.Value : alert.Quantity.Value);
         command.Parameters.AddWithValue("$closePrice", alert.ClosePrice is null ? DBNull.Value : alert.ClosePrice.Value);
         command.Parameters.AddWithValue("$ma5", alert.MovingAverage5 is null ? DBNull.Value : alert.MovingAverage5.Value);
@@ -702,6 +782,8 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
             StockName TEXT NOT NULL,
             CurrentPrice NUMERIC NULL,
             CurrentPriceIssue TEXT NULL,
+            EntryAveragePrice NUMERIC NULL,
+            EntryAveragePriceIssue TEXT NULL,
             Quantity NUMERIC NULL,
             HoldingKey TEXT NOT NULL,
             CreatedAt TEXT NOT NULL,
@@ -720,6 +802,9 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
             StockCode TEXT NOT NULL,
             StockName TEXT NOT NULL,
             CurrentPrice NUMERIC NULL,
+            CurrentPriceIssue TEXT NULL,
+            EntryAveragePrice NUMERIC NULL,
+            EntryAveragePriceIssue TEXT NULL,
             Quantity NUMERIC NULL,
             ClosePrice NUMERIC NULL,
             MovingAverage5 NUMERIC NULL,
@@ -736,7 +821,7 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
             CreatedAt TEXT NOT NULL,
             UpdatedAt TEXT NOT NULL,
             FOREIGN KEY (JobId) REFERENCES JobRuns(JobId),
-            CONSTRAINT UQ_StrategyAlerts UNIQUE (TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode)
+            CONSTRAINT UQ_StrategyAlerts UNIQUE (TradeDate, WorkbookPath, SheetName, ExcelRow, StockCode, AlertKind)
         );
         """;
 }

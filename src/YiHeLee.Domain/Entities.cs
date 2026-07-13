@@ -66,8 +66,8 @@ public sealed record CustomerHolding(
 /// <see cref="EntryAveragePrice"/>／<see cref="EntryAveragePriceIssue"/> 為表頭「進場價/平均價」欄位（非 DDE），
 /// 與現價完全獨立，AlertKind 為 EntryAveragePriceInvalid 時 <see cref="EntryAveragePrice"/> 必為 null；
 /// 兩組價格欄位禁止共用同一個 Issue 或同一個數值。
-/// <see cref="TriggeredMa5"/>／<see cref="TriggeredMa20"/>／<see cref="TriggeredMa120"/> 代表「進場價/平均價與現價
-/// 兩者皆大於或等於」該均價（雙價格同時達標），不是只看其中一個價格。
+/// <see cref="TriggeredMa5"/>／<see cref="TriggeredMa20"/>／<see cref="TriggeredMa120"/> 代表該均價大於或等於
+/// 「進場價/平均價」或「現價」其中一個價格（任一價格達標）。
 /// <see cref="DiagnosticStatus"/>／<see cref="MissingReason"/>／<see cref="AvailableTradingDayCount"/>／
 /// <see cref="LatestAvailableTradeDate"/> 為 Excel 輸出診斷欄位（計算狀態、缺少原因、有效交易日數、最新收盤日期），
 /// 不得讓使用者只看到空白卻不知道原因。</summary>

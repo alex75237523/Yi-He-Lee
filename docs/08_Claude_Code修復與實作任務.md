@@ -4,8 +4,9 @@
 
 在保留現有架構與既有功能的前提下，讓 `Yi He Lee` 可以在 Windows 正常 Restore、Build、Test、Publish，並符合完整需求。
 
-> 2026-07-12 更新：「進場價與現價雙重均價條件」需求已完成實作（分支 `fix/dual-price-moving-average-condition`），
-> 恢復並取代 2026-07-11 曾記載的「現價單一欄位」更正。詳見 `docs/05_異動紀錄.md`、`docs/06_建置驗證結果.md`。
+> 2026-07-13 更新：「均價高於任一價格即觸發通知」已成為現行正式規則（分支 `fix/reverse-dual-price-moving-average-condition`），
+> 取代 2026-07-12「進場價與現價需同時大於或等於均價」的舊方向。現行條件為 MA5／MA20／MA120 任一均價
+> `>= 進場價/平均價` 或 `>= 現價` 即成立；MA60 不參與觸發。詳見 `docs/05_異動紀錄.md`、`docs/06_建置驗證結果.md`。
 
 ## 第一階段：只做診斷
 

@@ -5,7 +5,7 @@ namespace YiHeLee.Tests;
 
 /// <summary>
 /// 「符合均價條件」頁籤判斷明細文字測試。輸出文字必須讓一般使用者不需理解程式邏輯即可看懂為何成立，
-/// 同時包含「進場價/平均價」「現價」「對應均價」「兩者皆達標」等字樣。
+/// 同時包含「均價 >= 進場價/平均價」或「均價 >= 現價」與「至少一項條件成立」等字樣。
 /// internal 方法由 <c>YiHeLee.App.csproj</c> 的 InternalsVisibleTo 開放給測試專案呼叫。
 /// </summary>
 public sealed class MainFormResultsFormattingTests
@@ -14,11 +14,11 @@ public sealed class MainFormResultsFormattingTests
     private static readonly DateTimeOffset CalculatedAt = new(2026, 7, 9, 13, 35, 0, TimeSpan.FromHours(8));
 
     [Fact]
-    public void 判斷明細同時包含進場價平均價現價對應均價與兩者皆達標()
+    public void 判斷明細以均價在左側顯示兩個價格條件()
     {
         var alert = CreateAlert(
-            entryAveragePrice: 501m, currentPrice: 520m,
-            ma5: 600m, ma20: 480m, ma120: 600m,
+            entryAveragePrice: 470m, currentPrice: 500m,
+            ma5: 450m, ma20: 480m, ma120: 450m,
             triggeredMa5: false, triggeredMa20: true, triggeredMa120: false);
 
         var detail = MainForm.BuildJudgmentDetail(alert);
@@ -26,9 +26,11 @@ public sealed class MainFormResultsFormattingTests
         Assert.Contains("進場價/平均價", detail, StringComparison.Ordinal);
         Assert.Contains("現價", detail, StringComparison.Ordinal);
         Assert.Contains("MA20", detail, StringComparison.Ordinal);
-        Assert.Contains("兩者皆達標", detail, StringComparison.Ordinal);
-        Assert.Contains("501", detail, StringComparison.Ordinal);
-        Assert.Contains("520", detail, StringComparison.Ordinal);
+        Assert.Contains("均價 480 >= 進場價/平均價 470", detail, StringComparison.Ordinal);
+        Assert.Contains("均價 480 < 現價 500", detail, StringComparison.Ordinal);
+        Assert.Contains("至少一項條件成立", detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("進場價/平均價 470 >= 480", detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("現價 500 >= 480", detail, StringComparison.Ordinal);
         Assert.Contains("480", detail, StringComparison.Ordinal);
     }
 
@@ -36,8 +38,8 @@ public sealed class MainFormResultsFormattingTests
     public void 同時符合多條均價時_判斷明細以換行分隔且各自列出對應均價()
     {
         var alert = CreateAlert(
-            entryAveragePrice: 501m, currentPrice: 520m,
-            ma5: 490m, ma20: 480m, ma120: 600m,
+            entryAveragePrice: 470m, currentPrice: 460m,
+            ma5: 490m, ma20: 480m, ma120: 450m,
             triggeredMa5: true, triggeredMa20: true, triggeredMa120: false);
 
         var detail = MainForm.BuildJudgmentDetail(alert);
@@ -46,7 +48,7 @@ public sealed class MainFormResultsFormattingTests
         Assert.Equal(2, lines.Length);
         Assert.Contains("MA5", lines[0], StringComparison.Ordinal);
         Assert.Contains("MA20", lines[1], StringComparison.Ordinal);
-        Assert.All(lines, line => Assert.Contains("兩者皆達標", line, StringComparison.Ordinal));
+        Assert.All(lines, line => Assert.Contains("至少一項條件成立", line, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -104,7 +106,7 @@ public sealed class MainFormResultsFormattingTests
         triggeredMa5,
         triggeredMa20,
         triggeredMa120,
-        "進場價/平均價與現價已同時大於或等於：測試",
+        "均價已大於或等於進場價/平均價或現價其中一項：測試",
         MarketType.Otc,
         null,
         null,

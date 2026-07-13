@@ -232,7 +232,7 @@ public sealed class DailyJobService
             await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, movingAverageSnapshots, cancellationToken).ConfigureAwait(false);
 
             var completedAt = _clock.GetTaipeiNow();
-            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價；比較基準：任一通知用均價大於或等於 Excel「進場價/平均價」或「現價」其中一項即成立。";
+            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價；比較基準：任一通知用均價小於或等於 Excel「進場價/平均價」或「現價」其中一項即成立。";
             var invalidCurrentPriceCount = alerts.Count(x => x.AlertKind == AlertKind.CurrentPriceInvalid);
             if (invalidCurrentPriceCount > 0)
             {

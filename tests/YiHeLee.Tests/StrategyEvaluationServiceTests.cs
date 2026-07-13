@@ -5,7 +5,7 @@ namespace YiHeLee.Tests;
 
 /// <summary>
 /// 2026-07-13 正式更正比較方向：客戶 Excel「進場價/平均價」與「現價」是兩個完全獨立、不得混用的欄位；
-/// 每一條均價（MA5／MA20／MA120）只要大於或等於「進場價/平均價」或「現價」其中一個價格就算成立。
+/// 每一條均價（MA5／MA20／MA120）只要小於或等於「進場價/平均價」或「現價」其中一個價格就算成立。
 /// MA60 只保存與顯示，不參與觸發。任一價格無效都不得觸發，且必須各自產生對應的異常通知。
 /// </summary>
 public sealed class StrategyEvaluationServiceTests
@@ -14,10 +14,10 @@ public sealed class StrategyEvaluationServiceTests
     private static readonly DateTimeOffset TaipeiNow = new(2026, 7, 9, 13, 35, 0, TimeSpan.FromHours(8));
 
     [Fact]
-    public void MA高於兩個價格時_MA5觸發()
+    public void MA低於兩個價格時_MA5觸發()
     {
         var holding = CreateHolding(entryAveragePrice: 480m, currentPrice: 490m);
-        var ma = CreateMovingAverage(close: 490m, ma5: 500m, ma20: 470m, ma60: 600m, ma120: 470m);
+        var ma = CreateMovingAverage(close: 490m, ma5: 470m, ma20: 600m, ma60: 600m, ma120: 600m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -33,7 +33,7 @@ public sealed class StrategyEvaluationServiceTests
     public void 進場價與現價都等於MA20時_MA20觸發_等於也算成立()
     {
         var holding = CreateHolding(entryAveragePrice: 480m, currentPrice: 480m);
-        var ma = CreateMovingAverage(close: 480m, ma5: 470m, ma20: 480m, ma60: 480m, ma120: 470m);
+        var ma = CreateMovingAverage(close: 480m, ma5: 600m, ma20: 480m, ma60: 480m, ma120: 600m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -45,25 +45,11 @@ public sealed class StrategyEvaluationServiceTests
     }
 
     [Fact]
-    public void 只高於進場價時_仍觸發()
+    public void 只低於進場價時_仍觸發()
     {
-        // MA20 480 >= 進場價 470 成立，即使 MA20 480 >= 現價 500 不成立，仍應觸發。
-        var holding = CreateHolding(entryAveragePrice: 470m, currentPrice: 500m);
-        var ma = CreateMovingAverage(close: 480m, ma5: 460m, ma20: 480m, ma60: 900m, ma120: 460m);
-
-        var result = new StrategyEvaluationService().Evaluate(
-            TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
-
-        var alert = Assert.Single(result);
-        Assert.True(alert.TriggeredMa20);
-    }
-
-    [Fact]
-    public void 只高於現價時_仍觸發()
-    {
-        // MA20 480 >= 現價 470 成立，即使 MA20 480 >= 進場價 500 不成立，仍應觸發。
+        // MA20 480 <= 進場價 500 成立，即使 MA20 480 <= 現價 470 不成立，仍應觸發。
         var holding = CreateHolding(entryAveragePrice: 500m, currentPrice: 470m);
-        var ma = CreateMovingAverage(close: 480m, ma5: 460m, ma20: 480m, ma60: 900m, ma120: 460m);
+        var ma = CreateMovingAverage(close: 480m, ma5: 600m, ma20: 480m, ma60: 900m, ma120: 600m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -73,10 +59,24 @@ public sealed class StrategyEvaluationServiceTests
     }
 
     [Fact]
-    public void 舊方向價格高於均價時_不得再觸發()
+    public void 只低於現價時_仍觸發()
+    {
+        // MA20 480 <= 現價 500 成立，即使 MA20 480 <= 進場價 470 不成立，仍應觸發。
+        var holding = CreateHolding(entryAveragePrice: 470m, currentPrice: 500m);
+        var ma = CreateMovingAverage(close: 480m, ma5: 600m, ma20: 480m, ma60: 900m, ma120: 600m);
+
+        var result = new StrategyEvaluationService().Evaluate(
+            TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
+
+        var alert = Assert.Single(result);
+        Assert.True(alert.TriggeredMa20);
+    }
+
+    [Fact]
+    public void 均價大於兩個價格時_不得觸發()
     {
         var holding = CreateHolding(entryAveragePrice: 501m, currentPrice: 520m);
-        var ma = CreateMovingAverage(close: 480m, ma5: 480m, ma20: 470m, ma60: 900m, ma120: 470m);
+        var ma = CreateMovingAverage(close: 480m, ma5: 600m, ma20: 610m, ma60: 900m, ma120: 620m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -88,8 +88,8 @@ public sealed class StrategyEvaluationServiceTests
     public void MA5未通過但MA20兩者都通過時_整體仍觸發()
     {
         var holding = CreateHolding(entryAveragePrice: 470m, currentPrice: 460m);
-        // MA5=450（低於任一價格），MA20=480（高於進場價與現價）。
-        var ma = CreateMovingAverage(close: 480m, ma5: 450m, ma20: 480m, ma60: 900m, ma120: 450m);
+        // MA5=500（高於兩個價格），MA20=450（低於進場價與現價）。
+        var ma = CreateMovingAverage(close: 480m, ma5: 500m, ma20: 450m, ma60: 900m, ma120: 500m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -104,7 +104,7 @@ public sealed class StrategyEvaluationServiceTests
     public void MA120交易日數不足為null時_不得觸發也不得硬算()
     {
         var holding = CreateHolding(entryAveragePrice: 80m, currentPrice: 82m);
-        var ma = new MovingAverageResult("5285", TradeDate, 90m, 85m, 88m, 92m, null, 45, CalculationStatus.InsufficientHistory);
+        var ma = new MovingAverageResult("5285", TradeDate, 90m, 75m, 78m, 92m, null, 45, CalculationStatus.InsufficientHistory);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -119,9 +119,9 @@ public sealed class StrategyEvaluationServiceTests
     [Fact]
     public void MA60即使兩者通過也不參與觸發()
     {
-        // MA60 高於兩個價格，但 MA5／MA20／MA120 皆低於任一價格：不得因 MA60 而觸發。
+        // MA60 低於兩個價格，但 MA5／MA20／MA120 皆高於兩個價格：不得因 MA60 而觸發。
         var holding = CreateHolding(entryAveragePrice: 500m, currentPrice: 520m);
-        var ma = CreateMovingAverage(close: 900m, ma5: 1m, ma20: 1m, ma60: 1000m, ma120: 1m);
+        var ma = CreateMovingAverage(close: 900m, ma5: 600m, ma20: 610m, ma60: 1m, ma120: 620m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -133,7 +133,7 @@ public sealed class StrategyEvaluationServiceTests
     public void 進場價空白時_產生進場價平均價異常且不觸發()
     {
         var holding = CreateHolding(entryAveragePrice: null, currentPrice: 1000m, entryAveragePriceIssue: "儲存格為空白，無法讀取進場價/平均價");
-        var ma = CreateMovingAverage(close: 10m, ma5: 1000m, ma20: 1000m, ma60: 1000m, ma120: 1000m);
+        var ma = CreateMovingAverage(close: 10m, ma5: 1m, ma20: 1m, ma60: 1m, ma120: 1m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -191,7 +191,7 @@ public sealed class StrategyEvaluationServiceTests
     public void 現價DDE無效時_仍維持現價異常()
     {
         var holding = CreateHolding(entryAveragePrice: 100m, currentPrice: null, currentPriceIssue: "儲存格為 #N/A（DDE 尚未取得資料，看盤軟體可能未開啟或未連線）");
-        var ma = CreateMovingAverage(close: 10m, ma5: 1000m, ma20: 1000m, ma60: 1000m, ma120: 1000m);
+        var ma = CreateMovingAverage(close: 10m, ma5: 1m, ma20: 1m, ma60: 1m, ma120: 1m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -206,7 +206,7 @@ public sealed class StrategyEvaluationServiceTests
         // MA5／MA20／MA60／MA120 是依官方收盤價自行計算，與現價（DDE）無關；即使現價異常，
         // 「每日五日均價策略」頁籤仍必須顯示已算出的均價，不得因現價異常而留白。
         Assert.Equal(10m, alert.ClosePrice);
-        Assert.Equal(1000m, alert.MovingAverage5);
+        Assert.Equal(1m, alert.MovingAverage5);
     }
 
     [Fact]
@@ -233,9 +233,9 @@ public sealed class StrategyEvaluationServiceTests
     [Fact]
     public void 不得以收盤價代替進場價或現價()
     {
-        // 收盤價與 MA20 相等，但進場價與現價都低於 MA20：不得誤用收盤價判斷觸發。
+        // 收盤價與價格相等，但 MA20 高於兩個價格：不得誤用收盤價判斷觸發。
         var holding = CreateHolding(entryAveragePrice: 500m, currentPrice: 500m);
-        var ma = CreateMovingAverage(close: 480m, ma5: 470m, ma20: 480m, ma60: 480m, ma120: 470m);
+        var ma = CreateMovingAverage(close: 500m, ma5: 600m, ma20: 620m, ma60: 500m, ma120: 610m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -254,9 +254,9 @@ public sealed class StrategyEvaluationServiceTests
         };
         var mas = new[]
         {
-            CreateMovingAverage(close: 480m, ma5: 500m, ma20: 470m, ma60: 480m, ma120: 470m) with { StockCode = "5285" },
-            CreateMovingAverage(close: 480m, ma5: 460m, ma20: 460m, ma60: 480m, ma120: 460m) with { StockCode = "2330" },
-            CreateMovingAverage(close: 480m, ma5: 500m, ma20: 480m, ma60: 480m, ma120: 470m) with { StockCode = "3691" },
+            CreateMovingAverage(close: 480m, ma5: 470m, ma20: 600m, ma60: 480m, ma120: 600m) with { StockCode = "5285" },
+            CreateMovingAverage(close: 480m, ma5: 600m, ma20: 610m, ma60: 480m, ma120: 620m) with { StockCode = "2330" },
+            CreateMovingAverage(close: 480m, ma5: 470m, ma20: 480m, ma60: 480m, ma120: 470m) with { StockCode = "3691" },
         };
         var marketTypes = new Dictionary<string, MarketType>(StringComparer.OrdinalIgnoreCase)
         {
@@ -308,7 +308,7 @@ public sealed class StrategyEvaluationServiceTests
     [Fact]
     public void 上櫃股票資料來源標示為TPEx()
     {
-        var ma = CreateMovingAverage(close: 50m, ma5: 120m, ma20: 121m, ma60: 62m, ma120: 123m);
+        var ma = CreateMovingAverage(close: 50m, ma5: 90m, ma20: 121m, ma60: 62m, ma120: 123m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate,
@@ -367,7 +367,7 @@ public sealed class StrategyEvaluationServiceTests
     public void 均線觸發時附上診斷欄位_計算狀態為正常()
     {
         var holding = CreateHolding(entryAveragePrice: 480m, currentPrice: 490m);
-        var ma = CreateMovingAverage(close: 480m, ma5: 500m, ma20: 470m, ma60: 480m, ma120: 470m);
+        var ma = CreateMovingAverage(close: 480m, ma5: 470m, ma20: 600m, ma60: 480m, ma120: 600m);
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [holding], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);
@@ -380,8 +380,8 @@ public sealed class StrategyEvaluationServiceTests
     [Fact]
     public void 逐檔歷史資料不足但部分均線已觸發時_仍產生通知並標示歷史資料不足()
     {
-        // 只有 MA5（5個有效交易日），MA20/60/120 因逐檔資料不足為 null；MA5 高於進場價與現價而觸發。
-        var ma = new MovingAverageResult("5285", TradeDate, 90m, 85m, null, null, null, 5, CalculationStatus.InsufficientHistory, TradeDate, "僅累積 5 個有效交易日，MA120 尚缺 115 個有效交易日（逐檔檢查，非市場整體交易日數）。");
+        // 只有 MA5（5個有效交易日），MA20/60/120 因逐檔資料不足為 null；MA5 低於進場價與現價而觸發。
+        var ma = new MovingAverageResult("5285", TradeDate, 90m, 75m, null, null, null, 5, CalculationStatus.InsufficientHistory, TradeDate, "僅累積 5 個有效交易日，MA120 尚缺 115 個有效交易日（逐檔檢查，非市場整體交易日數）。");
 
         var result = new StrategyEvaluationService().Evaluate(
             TradeDate, [CreateHolding(entryAveragePrice: 80m, currentPrice: 82m)], [ma], MarketTypesFor(MarketType.Listed), TaipeiNow);

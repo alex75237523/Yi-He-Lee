@@ -50,7 +50,7 @@ internal sealed partial class MainForm
         AddResultHeader(
             "Yi He Lee－每日均價判斷完成",
             $"資料日期：{summary.TargetDate:yyyy-MM-dd}　" +
-            $"符合均價高於任一價格條件：{summary.AlertCount} 筆　" +
+            $"符合均價低於任一價格條件：{summary.AlertCount} 筆　" +
             $"均價資料異常：{maAnomalies.Count} 筆　" +
             $"進場價/平均價異常：{invalidEntryAveragePriceCount} 筆　" +
             $"現價異常：{invalidCurrentPriceCount} 筆　" +
@@ -236,7 +236,7 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// 「符合均價條件」頁籤：「進場價/平均價」與「現價」是兩個完全獨立的欄位，必須分開顯示，
-    /// 不可合併成單一「價格」欄位。每一條均價（MA5／MA20／MA120）只要大於或等於
+    /// 不可合併成單一「價格」欄位。每一條均價（MA5／MA20／MA120）只要小於或等於
     /// 「進場價/平均價」或「現價」其中一個價格就算成立，判斷明細欄位讓一般使用者不需理解程式邏輯即可看懂原因。
     /// </summary>
     private static TabPage BuildTriggeredTab(IReadOnlyList<StrategyAlert> alerts)
@@ -246,7 +246,7 @@ internal sealed partial class MainForm
         {
             tab.Controls.Add(new Label
             {
-                Text = "今日沒有任何客戶股票符合 MA5、MA20 或 MA120 任一均價大於或等於「進場價/平均價」或「現價」。",
+                Text = "今日沒有任何客戶股票符合 MA5、MA20 或 MA120 任一均價小於或等於「進場價/平均價」或「現價」。",
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Font = new Font("Microsoft JhengHei UI", 13F, FontStyle.Bold),
@@ -455,7 +455,7 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// 「判斷明細」欄位：讓一般使用者不需理解程式邏輯即可看懂為何成立，例如：
-    /// 「MA20：均價 480 >= 進場價/平均價 470；均價 480 < 現價 500；至少一項條件成立」。
+    /// 「MA20：均價 480 <= 進場價/平均價 500；均價 480 > 現價 470；至少一項條件成立」。
     /// 只列出實際成立的均價；同時符合多條均價時以換行分隔，方便閱讀。
     /// internal 供 <c>MainFormResultsFormattingTests</c>（由 InternalsVisibleTo 開放給測試專案）驗證輸出文字。
     /// </summary>
@@ -481,8 +481,8 @@ internal sealed partial class MainForm
             return;
         }
 
-        var entryComparison = ma >= entry ? ">=" : "<";
-        var currentComparison = ma >= current ? ">=" : "<";
+        var entryComparison = ma <= entry ? "<=" : ">";
+        var currentComparison = ma <= current ? "<=" : ">";
         lines.Add($"{label}：均價 {ma:0.##} {entryComparison} 進場價/平均價 {entry:0.##}；均價 {ma:0.##} {currentComparison} 現價 {current:0.##}；至少一項條件成立");
     }
 

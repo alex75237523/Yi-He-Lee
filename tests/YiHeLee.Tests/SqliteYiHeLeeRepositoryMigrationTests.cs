@@ -209,7 +209,7 @@ public sealed class SqliteYiHeLeeRepositoryMigrationTests : IDisposable
         var alert = new StrategyAlert(
             TradeDate, AlertKind.MovingAverageTriggered, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
             520m, 8, 480m, 490m, 480m, 480m, 600m, true, true, false,
-            "均價已大於或等於進場價/平均價或現價其中一項：5 日均價、20 日均價",
+            "均價已小於或等於進場價/平均價或現價其中一項：5 日均價、20 日均價",
             MarketType.Otc, null, null, "TPEx", Now(),
             EntryAveragePrice: 501m, EntryAveragePriceIssue: null, CurrentPriceIssue: null);
 

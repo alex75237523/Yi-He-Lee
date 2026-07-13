@@ -42,6 +42,9 @@ public sealed class AppSettings
     /// 與 ShowHistoricalPriceButton 一樣，故意不放進設定頁籤 UI，只是 config 旗標，儲存設定時原樣保留。</summary>
     public bool ShowSourceSettings { get; set; } = false;
 
+    /// <summary>是否啟用鉅亨網址均價交叉比對；關閉時仍保留固定來源與正式 TWSE／TPEx 均價計算。</summary>
+    public bool EnableCnyesMovingAverageComparison { get; set; } = false;
+
     /// <summary>每日 13:35 自動排程是否啟用。設為 false 時排程不執行，使用者仍可手動「立即執行」。
     /// 2026-07-11 新增，預設啟用以保持既有行為。</summary>
     public bool EnableDailySchedule { get; set; } = true;

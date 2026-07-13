@@ -205,6 +205,27 @@ public sealed class DailyJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task 關閉鉅亨網址均價比對時_仍保留鉅亨清單保存但完成訊息標示略過比對()
+    {
+        var holding = CreateHolding("2330", "台積電", currentPrice: 900m);
+        var ma = FullHistoryMovingAverage("2330", close: 900m, ma5: 890m, ma20: 880m, ma60: 870m, ma120: 860m);
+        var callOrder = new List<string>();
+
+        var (service, _, _, _, _, _) = CreateService(
+            [holding],
+            new Dictionary<string, MovingAverageResult>(StringComparer.OrdinalIgnoreCase) { ["2330"] = ma },
+            new Dictionary<string, MarketType>(StringComparer.OrdinalIgnoreCase) { ["2330"] = MarketType.Listed },
+            callOrder,
+            settings => settings.EnableCnyesMovingAverageComparison = false);
+
+        var summary = await service.RunAsync(isManualRun: true, CancellationToken.None, TradeDate);
+
+        Assert.Equal(RunOutcome.Success, summary.Outcome);
+        Assert.Contains("CrawlCnyes", callOrder);
+        Assert.Contains("鉅亨網址均價比對已依設定略過", summary.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Excel均價前置列數等於DB均價快照_不含客戶診斷列()
     {
         var triggeredHolding = CreateHolding("2330", "台積電", currentPrice: 900m); // 會觸發
@@ -268,11 +289,13 @@ public sealed class DailyJobServiceTests : IDisposable
         IReadOnlyList<CustomerHolding> holdings,
         Dictionary<string, MovingAverageResult> movingAveragesByCode,
         Dictionary<string, MarketType> marketTypesByCode,
-        List<string>? callOrder = null)
+        List<string>? callOrder = null,
+        Action<AppSettings>? configureSettings = null)
     {
         callOrder ??= [];
         var settings = AppSettings.CreateDefault();
         settings.WorkbookPath = _workbookPath;
+        configureSettings?.Invoke(settings);
 
         var settingsStore = new FakeSettingsStore(settings);
         var logger = new FakeLogger();

@@ -16,6 +16,7 @@
   "CreateOutputWorksheetIfMissing": true,
   "ShowExcelSafetyPrompt": true,
   "AutoOpenWorkbookIfClosed": true,
+  "EnableCnyesMovingAverageComparison": false,
   "ShowHistoricalPriceButton": true,
   "ShowStatusText": true,
   "ExcludedHoldingFillColors": ["#92D050"],

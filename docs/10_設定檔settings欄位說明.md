@@ -30,6 +30,7 @@
 | `CreateOutputWorksheetIfMissing` | `true` | 找不到輸出頁籤時自動建立。 |
 | `ShowExcelSafetyPrompt` | `true` | 操作 Excel 前在「操作」頁顯示防呆確認（開始／取消）。 |
 | `AutoOpenWorkbookIfClosed` | `true` | 找不到已開啟的活頁簿時，自動用 Excel 開啟該檔案。 |
+| `EnableCnyesMovingAverageComparison` | `false` | 是否啟用鉅亨網址均價比對；預設不勾選。設為 `false` 時仍保留固定鉅亨來源與正式 TWSE／TPEx 均價計算，但略過鉅亨 MA 與官方 MA 的交叉驗證。此欄位可在設定頁「啟動與行為選項」勾選。 |
 | `EnableDailySchedule` | `true` | 每日 13:35 自動執行排程是否啟用；設為 `false` 時排程停用，使用者仍可手動點選「立即執行」。 |
 | `ShowHistoricalPriceButton` | `true` | 是否顯示「歷史收盤價」按鈕與系統匣選單項目；設為 `false` 可隱藏。**只能改檔案，設定頁籤沒有此選項**。 |
 | `ShowStatusText` | `true` | 「操作」頁是否顯示執行中的文字狀態（目前執行到哪個步驟）；設為 `false` 時只顯示進度條。**只能改檔案**。註：MA120 歷史回補的逐日細節進度不受此旗標影響，一律顯示於進度條下方。 |

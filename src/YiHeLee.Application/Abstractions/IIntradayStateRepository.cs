@@ -23,7 +23,7 @@ public interface IIntradayStateRepository
         IReadOnlyList<IntradayAlertStateRecord> states,
         CancellationToken cancellationToken);
 
-    /// <summary>保存一筆盤中執行摘要（每分鐘一筆，不保存整份持股快照）。</summary>
+    /// <summary>保存一筆盤中執行摘要（每次 Tick 一筆，不保存整份持股快照）。</summary>
     Task SaveEvaluationRunAsync(IntradayEvaluationRunRecord run, CancellationToken cancellationToken);
 
     /// <summary>取得指定判斷日最近的盤中執行紀錄（由新到舊），供畫面顯示與追查。</summary>

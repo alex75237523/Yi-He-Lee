@@ -6,7 +6,7 @@ namespace YiHeLee.Application.Services;
 /// <summary>
 /// 市場工作流程排程器（2026-07-13 取代原 DailyScheduleCoordinator）。
 /// 只負責依台北時間觸發兩條完全獨立的流程：
-/// 1. 盤中監控（<see cref="IntradayMonitoringService"/>）：交易日 09:00～13:30 每 1 分鐘一次，對齊整分鐘；
+/// 1. 盤中監控（<see cref="IntradayMonitoringService"/>）：交易日 09:00～13:30 依 IntradayCheckIntervalSeconds 週期執行；
 ///    程式於盤中啟動時立即執行一次；上一 Tick 未完成時下一 Tick 直接略過，不排隊。
 /// 2. 收盤更新（<see cref="ClosePrecomputeJobService"/>）：13:35 執行；13:35 後啟動且今日尚未成功時補跑。
 /// 不包含爬文、Excel 或資料庫商業邏輯；非交易日不啟動盤中監控。
@@ -23,7 +23,8 @@ public sealed class MarketWorkflowScheduleCoordinator : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private Task<IntradayRunSummary>? _currentIntradayTask;
-    private DateTimeOffset? _lastIntradayTickMinute;
+    private DateTimeOffset? _lastIntradayTickAt;
+    private int _lastIntradayIntervalSeconds = 30;
     private IntradayRunSummary? _lastIntradaySummary;
     private DateOnly? _lastCloseSucceededDate;
 
@@ -115,7 +116,9 @@ public sealed class MarketWorkflowScheduleCoordinator : IAsyncDisposable
                 _logger.Error("排程觸發器發生未預期錯誤，稍後會再次檢查。", ex);
             }
 
-            var delay = MarketWorkflowPlanner.GetNextWakeDelay(_clock.GetTaipeiNow());
+            var settings = await _settingsStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+            var delay = MarketWorkflowPlanner.GetNextWakeDelay(
+                _clock.GetTaipeiNow(), _lastIntradayTickAt, settings.IntradayCheckIntervalSeconds);
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -166,20 +169,23 @@ public sealed class MarketWorkflowScheduleCoordinator : IAsyncDisposable
         }
 
         var previousStillRunning = _currentIntradayTask is { IsCompleted: false };
-        if (!MarketWorkflowPlanner.ShouldTriggerIntradayTick(now, _lastIntradayTickMinute, previousStillRunning))
+        if (!MarketWorkflowPlanner.ShouldTriggerIntradayTick(
+                now, _lastIntradayTickAt, previousStillRunning, settings.IntradayCheckIntervalSeconds))
         {
-            if (previousStillRunning && _lastIntradayTickMinute is DateTimeOffset last
-                && MarketWorkflowPlanner.TruncateToMinute(now) > MarketWorkflowPlanner.TruncateToMinute(last))
+            if (previousStillRunning && _lastIntradayTickAt is DateTimeOffset last
+                && now >= MarketWorkflowPlanner.GetNextIntradayTickAt(last, settings.IntradayCheckIntervalSeconds))
             {
-                // 上一次盤中判斷超過 1 分鐘尚未完成：本分鐘直接略過並記住已消耗，不排隊累積。
-                _lastIntradayTickMinute = MarketWorkflowPlanner.TruncateToMinute(now);
-                _logger.Warning($"盤中判斷已超過 1 分鐘尚未完成，{now:HH:mm} 這一分鐘的 Tick 直接略過，不排隊。");
+                // 上一次盤中判斷超過設定間隔尚未完成：本次 Tick 直接略過並記住已消耗，不排隊累積。
+                _lastIntradayTickAt = now;
+                _logger.Warning($"盤中判斷已超過 {settings.IntradayCheckIntervalSeconds} 秒尚未完成，{now:HH:mm:ss} 這一次 Tick 直接略過，不排隊。");
             }
 
             return;
         }
 
-        _lastIntradayTickMinute = MarketWorkflowPlanner.TruncateToMinute(now);
+        _lastIntradayIntervalSeconds = settings.IntradayCheckIntervalSeconds;
+
+        _lastIntradayTickAt = now;
 
         // 不 await：Tick 在背景執行，避免排程迴圈被單次判斷卡住；
         // 併發安全由 IWorkflowExecutionGate 保證（同一時間只有一個盤中判斷）。
@@ -210,7 +216,7 @@ public sealed class MarketWorkflowScheduleCoordinator : IAsyncDisposable
         }
 
         var attemptCount = await _repository.GetAttemptCountAsync(today, cancellationToken).ConfigureAwait(false);
-        if (!MarketWorkflowPlanner.ShouldRunCloseUpdate(now, latest, attemptCount, settings.MaximumDailyAttempts, settings.RetryIntervalMinutes))
+        if (!MarketWorkflowPlanner.ShouldRunCloseUpdate(now, latest, attemptCount, settings.MaximumDailyAttempts, settings.ClosePriceRetryIntervalSeconds))
         {
             await PublishStatusAsync(MarketWorkflowPhase.WaitingForClose, today, now, "等待收盤更新重試或已達當日上限", cancellationToken).ConfigureAwait(false);
             return;
@@ -284,7 +290,9 @@ public sealed class MarketWorkflowScheduleCoordinator : IAsyncDisposable
         if (phase is MarketWorkflowPhase.IntradayMonitoring or MarketWorkflowPhase.BaselineNotReady
             && MarketWorkflowPlanner.IsWithinIntradayWindow(time))
         {
-            nextIntradayTickAt = MarketWorkflowPlanner.GetNextAlignedMinute(now);
+            nextIntradayTickAt = _lastIntradayTickAt is DateTimeOffset last
+                ? MarketWorkflowPlanner.GetNextIntradayTickAt(last, _lastIntradayIntervalSeconds)
+                : now;
         }
 
         DateTimeOffset? nextCloseRunAt = null;

@@ -53,6 +53,16 @@ public sealed class SettingsValidationService
             errors.Add("爬蟲與 Excel 短暫重試次數至少為 1。");
         }
 
+        if (settings.IntradayCheckIntervalSeconds is < 10 or > 600)
+        {
+            errors.Add("盤中自動判斷間隔必須介於 10～600 秒。");
+        }
+
+        if (settings.ClosePriceRetryIntervalSeconds is < 10 or > 600)
+        {
+            errors.Add("盤後收盤價重試間隔必須介於 10～600 秒。");
+        }
+
         var duplicateSourceKeys = settings.Sources
             .Where(x => x.Enabled)
             .GroupBy(x => x.SourceKey.Trim(), StringComparer.OrdinalIgnoreCase)
@@ -166,6 +176,9 @@ public sealed class SettingsValidationService
             .Select(x => x.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        settings.IntradayCheckIntervalSeconds = Math.Clamp(settings.IntradayCheckIntervalSeconds, 10, 600);
+        settings.ClosePriceRetryIntervalSeconds = Math.Clamp(settings.ClosePriceRetryIntervalSeconds, 10, 600);
     }
 
     public static bool TryNormalizeColor(string? value, out string normalized)

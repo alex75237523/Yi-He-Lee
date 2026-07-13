@@ -27,6 +27,8 @@ public sealed class SettingsValidationServiceTests
         Assert.Contains("#92D050", settings.ExcludedHoldingFillColors, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("afterTrading/otc", settings.OfficialMarketData.TpexDailyCloseUrlTemplate, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("emerging/historical", settings.OfficialMarketData.EmergingHistoricalUrlTemplate, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(30, settings.IntradayCheckIntervalSeconds);
+        Assert.Equal(60, settings.ClosePriceRetryIntervalSeconds);
     }
 
     [Theory]
@@ -36,5 +38,30 @@ public sealed class SettingsValidationServiceTests
     {
         Assert.True(SettingsValidationService.TryNormalizeColor(input, out var normalized));
         Assert.Equal(expected, normalized);
+    }
+
+    [Fact]
+    public void 盤中與收盤重試秒數超出範圍時驗證失敗()
+    {
+        var settings = new AppSettings
+        {
+            WorkbookPath = CreateTempWorkbook(),
+            OutputWorksheetName = "每日五日均價策略",
+            IntradayCheckIntervalSeconds = 9,
+            ClosePriceRetryIntervalSeconds = 601
+        };
+        var service = new SettingsValidationService();
+
+        var errors = service.Validate(settings);
+
+        Assert.Contains(errors, x => x.Contains("盤中自動判斷間隔", StringComparison.Ordinal));
+        Assert.Contains(errors, x => x.Contains("盤後收盤價重試間隔", StringComparison.Ordinal));
+    }
+
+    private static string CreateTempWorkbook()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.xlsx");
+        File.WriteAllBytes(path, []);
+        return path;
     }
 }

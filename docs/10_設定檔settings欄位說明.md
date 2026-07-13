@@ -24,6 +24,8 @@
 | `CrawlerShortRetryDelaySeconds` | `5` | 爬蟲短暫重試之間的等待秒數。 |
 | `ExcelShortRetryCount` | `5` | Excel 忙碌（儲存格編輯中、對話框開啟）時的短暫重試次數。 |
 | `ExcelShortRetryDelaySeconds` | `2` | Excel 忙碌重試之間的等待秒數。 |
+| `IntradayCheckIntervalSeconds` | `30` | 盤中 09:00～13:30 自動讀取 Excel 現價並判斷的間隔秒數；範圍 10～600 秒，可在設定頁修改。 |
+| `ClosePriceRetryIntervalSeconds` | `60` | 13:35 後官方收盤價尚未公布或暫時失敗時，收盤更新下一次重試間隔；範圍 10～600 秒，可在設定頁修改。不可重試錯誤仍需人工處理，不會依此欄位無限重試。 |
 | `StartWithWindows` | `true` | 登入 Windows 後自動啟動。 |
 | `StartMinimized` | `true` | 啟動後只顯示在右下角系統匣，不開主視窗。 |
 | `RequireBackupBeforeExcelWrite` | `true` | 寫入 Excel 前先在 `Backups` 資料夾建立備份。 |
@@ -32,6 +34,7 @@
 | `AutoOpenWorkbookIfClosed` | `true` | 找不到已開啟的活頁簿時，自動用 Excel 開啟該檔案。 |
 | `EnableCnyesMovingAverageComparison` | `false` | 是否啟用鉅亨網址均價比對；預設不勾選。設為 `false` 時仍保留固定鉅亨來源與正式 TWSE／TPEx 均價計算，但略過鉅亨 MA 與官方 MA 的交叉驗證。此欄位可在設定頁「啟動與行為選項」勾選。 |
 | `EnableDailySchedule` | `true` | 每日 13:35 自動執行排程是否啟用；設為 `false` 時排程停用，使用者仍可手動點選「立即執行」。 |
+| `EnableIntradayMonitoring` | `true` | 交易日 09:00～13:30 是否啟用盤中自動判斷；設為 `false` 時仍可手動點選「立即執行盤中判斷」。 |
 | `ShowHistoricalPriceButton` | `true` | 是否顯示「歷史收盤價」按鈕與系統匣選單項目；設為 `false` 可隱藏。**只能改檔案，設定頁籤沒有此選項**。 |
 | `ShowStatusText` | `true` | 「操作」頁是否顯示執行中的文字狀態（目前執行到哪個步驟）；設為 `false` 時只顯示進度條。**只能改檔案**。註：MA120 歷史回補的逐日細節進度不受此旗標影響，一律顯示於進度條下方。 |
 | `ShowSourceSettings` | `false` | 設定頁是否顯示「資料來源網址」頁籤（鉅亨網來源清單）。預設隱藏避免誤改；隱藏時來源設定仍原樣保留、正常運作。**只能改檔案**。 |

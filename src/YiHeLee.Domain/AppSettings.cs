@@ -11,9 +11,6 @@ public sealed class AppSettings
     /// <summary>盤中監控結束時間（台北時間，不含）；13:30 起停止盤中判斷，13:35 執行收盤更新。</summary>
     public static readonly TimeOnly IntradayMonitoringEndTime = new(13, 30);
 
-    /// <summary>盤中判斷頻率：每 1 分鐘一次，並對齊整分鐘執行。</summary>
-    public static readonly TimeSpan IntradayEvaluationInterval = TimeSpan.FromMinutes(1);
-
     public string WorkbookPath { get; set; } = string.Empty;
     public string OutputWorksheetName { get; set; } = "每日五日均價策略";
     public List<string> ExcludedWorksheetNames { get; set; } = ["總表", "每日五日均價策略"];
@@ -30,6 +27,13 @@ public sealed class AppSettings
     public int CrawlerShortRetryDelaySeconds { get; set; } = 5;
     public int ExcelShortRetryCount { get; set; } = 5;
     public int ExcelShortRetryDelaySeconds { get; set; } = 2;
+
+    /// <summary>盤中讀取 Excel 現價並判斷的間隔秒數；預設 30 秒，設定頁限制 10～600 秒。</summary>
+    public int IntradayCheckIntervalSeconds { get; set; } = 30;
+
+    /// <summary>13:35 後官方收盤價尚未公布或暫時失敗時，下一次收盤更新重試間隔；預設 60 秒，設定頁限制 10～600 秒。</summary>
+    public int ClosePriceRetryIntervalSeconds { get; set; } = 60;
+
     public bool StartWithWindows { get; set; } = true;
     public bool StartMinimized { get; set; } = true;
     public bool RequireBackupBeforeExcelWrite { get; set; } = true;
@@ -58,8 +62,8 @@ public sealed class AppSettings
     /// 2026-07-11 新增，預設啟用以保持既有行為。</summary>
     public bool EnableDailySchedule { get; set; } = true;
 
-    /// <summary>盤中每分鐘監控是否啟用（2026-07-13 盤中／收盤流程拆分新增）。設為 false 時盤中排程不執行，
-    /// 使用者仍可手動「立即執行盤中判斷」。盤中時段（09:00～13:30）與每分鐘頻率為程式常數，不開放設定頁修改。</summary>
+    /// <summary>盤中自動監控是否啟用（2026-07-13 盤中／收盤流程拆分新增）。設為 false 時盤中排程不執行，
+    /// 使用者仍可手動「立即執行盤中判斷」。盤中時段固定為 09:00～13:30，頻率由 IntradayCheckIntervalSeconds 控制。</summary>
     public bool EnableIntradayMonitoring { get; set; } = true;
 
     /// <summary>

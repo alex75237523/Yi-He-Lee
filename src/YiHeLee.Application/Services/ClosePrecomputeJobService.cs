@@ -10,7 +10,7 @@ namespace YiHeLee.Application.Services;
 /// StockDailyPrice Upsert、計算及保存 StockMovingAverage、鉅亨清單保存與交叉驗證、
 /// Excel「每日五日均價策略」七欄輸出、收盤 Job／錯誤／重試紀錄（JobRuns），
 /// 並在完成後把該交易日標記為「下一交易日盤中判斷基準已準備完成」（以已保存的均價快照為準）。
-/// 禁止包含：讀取客戶頁籤現價、每分鐘監控、呼叫客戶盤中策略通知（StrategyEvaluationService）；
+/// 禁止包含：讀取客戶頁籤現價、盤中監控、呼叫客戶盤中策略通知（StrategyEvaluationService）；
 /// 也不得因 DDE 或進場價異常導致收盤工作失敗——本類別完全不接觸客戶持股欄位。
 /// 當天收盤產生的新均價，下一個交易日盤中才開始使用。
 /// </summary>

@@ -16,6 +16,8 @@ internal sealed partial class MainForm
     private readonly NumericUpDown _crawlerRetryDelay = new();
     private readonly NumericUpDown _excelRetryCount = new();
     private readonly NumericUpDown _excelRetryDelay = new();
+    private readonly NumericUpDown _intradayCheckIntervalSeconds = new();
+    private readonly NumericUpDown _closePriceRetryIntervalSeconds = new();
     private readonly CheckBox _startWithWindows = new();
     private readonly CheckBox _startMinimized = new();
     private readonly CheckBox _backupBeforeWrite = new();
@@ -23,6 +25,7 @@ internal sealed partial class MainForm
     private readonly CheckBox _showSafetyPrompt = new();
     private readonly CheckBox _autoOpenWorkbook = new();
     private readonly CheckBox _enableDailySchedule = new();
+    private readonly CheckBox _enableIntradayMonitoring = new();
     private readonly CheckBox _enableCnyesMovingAverageComparison = new();
     private readonly TextBox _excludedColors = new();
     private readonly TextBox _excludedMarkers = new();
@@ -203,7 +206,7 @@ internal sealed partial class MainForm
     {
         var group = CreateSectionGroup("執行次數與重試設定");
 
-        // 六個數值欄位改為每列兩組（次數｜等待），高度減半、相關欄位並列好對照。
+        // 數值欄位改為每列兩組（次數｜等待），高度減半、相關欄位並列好對照。
         var panel = new TableLayoutPanel
         {
             AutoSize = true,
@@ -222,10 +225,13 @@ internal sealed partial class MainForm
         ConfigureNumeric(_crawlerRetryDelay, 1, 120);
         ConfigureNumeric(_excelRetryCount, 1, 20);
         ConfigureNumeric(_excelRetryDelay, 1, 120);
+        ConfigureNumeric(_intradayCheckIntervalSeconds, 10, 600);
+        ConfigureNumeric(_closePriceRetryIntervalSeconds, 10, 600);
 
-        AddNumericPairRow(panel, 0, "網站／Excel 長時間重試間隔（分鐘）", _retryMinutes, "每日最大執行次數", _maximumAttempts);
-        AddNumericPairRow(panel, 1, "每次爬蟲短暫重試次數", _crawlerRetryCount, "爬蟲短暫重試等待（秒）", _crawlerRetryDelay);
-        AddNumericPairRow(panel, 2, "Excel 忙碌短暫重試次數", _excelRetryCount, "Excel 忙碌重試等待（秒）", _excelRetryDelay);
+        AddNumericPairRow(panel, 0, "盤中自動判斷間隔（秒）", _intradayCheckIntervalSeconds, "盤後收盤價重試間隔（秒）", _closePriceRetryIntervalSeconds);
+        AddNumericPairRow(panel, 1, "網站／Excel 長時間重試間隔（分鐘）", _retryMinutes, "每日最大執行次數", _maximumAttempts);
+        AddNumericPairRow(panel, 2, "每次爬蟲短暫重試次數", _crawlerRetryCount, "爬蟲短暫重試等待（秒）", _crawlerRetryDelay);
+        AddNumericPairRow(panel, 3, "Excel 忙碌短暫重試次數", _excelRetryCount, "Excel 忙碌重試等待（秒）", _excelRetryDelay);
 
         group.Controls.Add(panel);
         return group;
@@ -273,6 +279,7 @@ internal sealed partial class MainForm
             (_showSafetyPrompt, "操作 Excel 前顯示防呆確認"),
             (_autoOpenWorkbook, "找不到已開啟的活頁簿時自動開啟 Excel 檔案"),
             (_enableDailySchedule, "每日 13:35 自動執行排程"),
+            (_enableIntradayMonitoring, "盤中自動判斷"),
             (_enableCnyesMovingAverageComparison, "啟用鉅亨網址均價比對")
         ];
         foreach (var (checkBox, text) in options)
@@ -456,6 +463,8 @@ internal sealed partial class MainForm
         _crawlerRetryDelay.Value = Clamp(settings.CrawlerShortRetryDelaySeconds, _crawlerRetryDelay);
         _excelRetryCount.Value = Clamp(settings.ExcelShortRetryCount, _excelRetryCount);
         _excelRetryDelay.Value = Clamp(settings.ExcelShortRetryDelaySeconds, _excelRetryDelay);
+        _intradayCheckIntervalSeconds.Value = Clamp(settings.IntradayCheckIntervalSeconds, _intradayCheckIntervalSeconds);
+        _closePriceRetryIntervalSeconds.Value = Clamp(settings.ClosePriceRetryIntervalSeconds, _closePriceRetryIntervalSeconds);
         _startWithWindows.Checked = settings.StartWithWindows;
         _startMinimized.Checked = settings.StartMinimized;
         _backupBeforeWrite.Checked = settings.RequireBackupBeforeExcelWrite;
@@ -463,6 +472,7 @@ internal sealed partial class MainForm
         _showSafetyPrompt.Checked = settings.ShowExcelSafetyPrompt;
         _autoOpenWorkbook.Checked = settings.AutoOpenWorkbookIfClosed;
         _enableDailySchedule.Checked = settings.EnableDailySchedule;
+        _enableIntradayMonitoring.Checked = settings.EnableIntradayMonitoring;
         _enableCnyesMovingAverageComparison.Checked = settings.EnableCnyesMovingAverageComparison;
         _excludedColors.Text = string.Join(", ", settings.ExcludedHoldingFillColors);
         _excludedMarkers.Text = string.Join(Environment.NewLine, settings.ExcludedHoldingTextMarkers);
@@ -585,6 +595,8 @@ internal sealed partial class MainForm
         CrawlerShortRetryDelaySeconds = Decimal.ToInt32(_crawlerRetryDelay.Value),
         ExcelShortRetryCount = Decimal.ToInt32(_excelRetryCount.Value),
         ExcelShortRetryDelaySeconds = Decimal.ToInt32(_excelRetryDelay.Value),
+        IntradayCheckIntervalSeconds = Decimal.ToInt32(_intradayCheckIntervalSeconds.Value),
+        ClosePriceRetryIntervalSeconds = Decimal.ToInt32(_closePriceRetryIntervalSeconds.Value),
         StartWithWindows = _startWithWindows.Checked,
         StartMinimized = _startMinimized.Checked,
         RequireBackupBeforeExcelWrite = _backupBeforeWrite.Checked,
@@ -592,6 +604,7 @@ internal sealed partial class MainForm
         ShowExcelSafetyPrompt = _showSafetyPrompt.Checked,
         AutoOpenWorkbookIfClosed = _autoOpenWorkbook.Checked,
         EnableDailySchedule = _enableDailySchedule.Checked,
+        EnableIntradayMonitoring = _enableIntradayMonitoring.Checked,
         EnableCnyesMovingAverageComparison = _enableCnyesMovingAverageComparison.Checked,
         ShowHistoricalPriceButton = _showHistoricalPriceButtonSetting,
         ShowStatusText = _showStatusTextSetting,

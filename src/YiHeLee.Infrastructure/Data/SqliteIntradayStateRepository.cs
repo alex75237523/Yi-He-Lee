@@ -8,7 +8,7 @@ namespace YiHeLee.Infrastructure.Data;
 /// <summary>
 /// 盤中通知去重狀態（IntradayAlertState）與盤中執行紀錄（IntradayEvaluationRun）的 SQLite 實作
 /// （2026-07-13 盤中／收盤流程拆分新增）。
-/// 全部參數化 SQL；IntradayAlertState 以唯一鍵 Upsert；IntradayEvaluationRun 每分鐘一筆摘要。
+/// 全部參數化 SQL；IntradayAlertState 以唯一鍵 Upsert；IntradayEvaluationRun 每次 Tick 一筆摘要。
 /// Migration 只以 CREATE TABLE IF NOT EXISTS 新增兩張獨立資料表，不修改、不刪除既有
 /// JobRuns／StrategyAlerts 等正式資料。
 /// </summary>
@@ -274,13 +274,13 @@ public sealed class SqliteIntradayStateRepository : IIntradayStateRepository
         CREATE INDEX IF NOT EXISTS IX_IntradayAlertState_Date_Workbook
             ON IntradayAlertState(EvaluationDate, WorkbookPath);
 
-        -- 盤中每分鐘執行紀錄（2026-07-13 新增）。每分鐘只保存摘要，不保存整份持股快照；
+        -- 盤中自動判斷執行紀錄（2026-07-13 新增）。每次 Tick 只保存摘要，不保存整份持股快照；
         -- 與收盤更新的 JobRuns 完全分開，語意不得混用。
         CREATE TABLE IF NOT EXISTS IntradayEvaluationRun (
             Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 執行 ID
             EvaluationDate TEXT NOT NULL,                    -- 盤中判斷日期（今天）
             BaselineTradeDate TEXT NULL,                     -- 使用的上一交易日均價日期（基準未就緒時為 NULL）
-            ScheduledAt TEXT NOT NULL,                       -- 本次 Tick 預定時間（對齊整分鐘；手動執行為觸發時間）
+            ScheduledAt TEXT NOT NULL,                       -- 本次 Tick 預定時間（依設定秒數觸發；手動執行為觸發時間）
             StartedAt TEXT NULL,                             -- 實際開始時間（被略過時為 NULL）
             CompletedAt TEXT NULL,                           -- 完成時間
             Status INTEGER NOT NULL,                         -- 1成功／2部分成功／3失敗／4略過／5基準未就緒

@@ -312,8 +312,8 @@ CREATE TABLE IF NOT EXISTS StockPriceImportTask (
 CREATE INDEX IF NOT EXISTS IX_StockPriceImportTask_Job_Status ON StockPriceImportTask(JobId, Status);
 
 -- =====================================================================
--- 以下為盤中每分鐘判斷相關資料表（2026-07-13 盤中／收盤流程拆分新增）。
--- 盤中：使用上一交易日已保存均價，每分鐘讀取客戶 Excel 價格並判斷；
+-- 以下為盤中自動判斷相關資料表（2026-07-13 盤中／收盤流程拆分新增）。
+-- 盤中：使用上一交易日已保存均價，依設定秒數讀取客戶 Excel 價格並判斷；
 -- 收盤：抓取今日正式收盤價、換算今日均價、保存 SQLite 與 Excel；
 -- 今日收盤產生的均價，下一個交易日盤中才開始使用。
 -- 盤中執行紀錄使用獨立資料表，不寫入 JobRuns，避免兩種 Job 語意混淆。
@@ -344,13 +344,13 @@ CREATE TABLE IF NOT EXISTS IntradayAlertState (
 CREATE INDEX IF NOT EXISTS IX_IntradayAlertState_Date_Workbook
     ON IntradayAlertState(EvaluationDate, WorkbookPath);
 
--- 盤中每分鐘執行紀錄：每分鐘只保存摘要，不保存整份持股快照。
+-- 盤中自動判斷執行紀錄：每次 Tick 只保存摘要，不保存整份持股快照。
 -- EvaluationDate（今天判斷日）與 BaselineTradeDate（上一交易日均價日）必須明確分開。
 CREATE TABLE IF NOT EXISTS IntradayEvaluationRun (
     Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 執行 ID
     EvaluationDate TEXT NOT NULL,                    -- 盤中判斷日期（今天）
     BaselineTradeDate TEXT NULL,                     -- 使用的上一交易日均價日期（基準未就緒時為 NULL）
-    ScheduledAt TEXT NOT NULL,                       -- 本次 Tick 預定時間（對齊整分鐘；手動執行為觸發時間）
+    ScheduledAt TEXT NOT NULL,                       -- 本次 Tick 預定時間（依設定秒數觸發；手動執行為觸發時間）
     StartedAt TEXT NULL,                             -- 實際開始時間（被略過時為 NULL）
     CompletedAt TEXT NULL,                           -- 完成時間
     Status INTEGER NOT NULL,                         -- 1成功／2部分成功／3失敗／4略過／5基準未就緒

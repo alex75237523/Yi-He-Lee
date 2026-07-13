@@ -422,8 +422,8 @@ public sealed record IntradayAlertStateRecord(
     DateTimeOffset? ClearedAt);
 
 /// <summary>
-/// 盤中每分鐘執行紀錄（IntradayEvaluationRun 資料表，2026-07-13 新增）。
-/// 每分鐘只保存摘要，不重複保存整份持股快照；與收盤更新的 JobRuns 完全分開，語意不得混用。
+/// 盤中自動判斷執行紀錄（IntradayEvaluationRun 資料表，2026-07-13 新增）。
+/// 每次 Tick 只保存摘要，不重複保存整份持股快照；與收盤更新的 JobRuns 完全分開，語意不得混用。
 /// <see cref="EvaluationDate"/> 為今天盤中判斷日期，<see cref="BaselineTradeDate"/> 為使用的上一交易日均價日期，
 /// 兩者必須明確分開，禁止只用一個日期同時代表兩種語意。
 /// </summary>

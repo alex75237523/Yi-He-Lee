@@ -4,7 +4,7 @@ using YiHeLee.Domain;
 namespace YiHeLee.Application.Services;
 
 /// <summary>
-/// 盤中每分鐘客戶價格監控（2026-07-13 盤中／收盤流程拆分新增）。
+/// 盤中客戶價格自動監控（2026-07-13 盤中／收盤流程拆分新增）。
 /// 只負責：解析上一交易日基準、讀取已保存於 SQLite 的上一交易日均價、讀取 Excel 客戶持股
 /// 與最新 DDE 現價（唯讀，不備份、不儲存、不覆寫活頁簿）、呼叫既有
 /// <see cref="StrategyEvaluationService"/>、以 IntradayAlertState 去重通知、保存盤中執行摘要。
@@ -54,7 +54,7 @@ public sealed class IntradayMonitoringService
     }
 
     /// <summary>
-    /// 執行一次盤中判斷。<paramref name="scheduledAt"/> 為本次 Tick 的預定時間（排程對齊整分鐘；
+    /// 執行一次盤中判斷。<paramref name="scheduledAt"/> 為本次 Tick 的預定時間（排程依 IntradayCheckIntervalSeconds 觸發；
     /// 手動執行為觸發當下）。鎖已被占用（上一次盤中判斷尚未完成或收盤更新執行中）時直接記錄略過，
     /// 不排隊、不同時執行兩次盤中判斷。
     /// </summary>

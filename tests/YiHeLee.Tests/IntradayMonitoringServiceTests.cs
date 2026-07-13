@@ -5,7 +5,7 @@ using YiHeLee.Domain;
 namespace YiHeLee.Tests;
 
 /// <summary>
-/// 驗證盤中每分鐘判斷（2026-07-13 盤中／收盤流程拆分）的流程隔離與通知去重：
+/// 驗證盤中自動判斷（2026-07-13 盤中／收盤流程拆分）的流程隔離與通知去重：
 /// 盤中 Tick 只讀取已保存的上一交易日 StockMovingAverage 與 Excel 當下進場價／DDE 現價，
 /// 不呼叫官方 Provider、不計算均線、不寫入 StockMovingAverage、不寫入 Excel 頁籤
 /// （本測試以 Spy 驗證，且 IntradayMonitoringService 建構子根本不依賴這些元件）；
@@ -21,7 +21,7 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 盤中判斷只用上一交易日均價_不抓官方資料_不算均線_不寫Excel()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
 
         var summary = await fixture.Service.RunOnceAsync(isManualRun: false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
 
@@ -56,13 +56,13 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 盤中判斷使用Excel當下的進場價與DDE現價()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 951.5m, currentPrice: 942.25m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 851.5m, currentPrice: 842.25m, excelRow: 4)];
 
         var summary = await fixture.Service.RunOnceAsync(isManualRun: false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
 
         var alert = Assert.Single(summary.Alerts, x => x.AlertKind == AlertKind.MovingAverageTriggered);
-        Assert.Equal(951.5m, alert.EntryAveragePrice);
-        Assert.Equal(942.25m, alert.CurrentPrice);
+        Assert.Equal(851.5m, alert.EntryAveragePrice);
+        Assert.Equal(842.25m, alert.CurrentPrice);
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public sealed class IntradayMonitoringServiceTests
         var fixture = CreateFixture();
         fixture.Excel.Holdings =
         [
-            CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4),
+            CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4),
             CreateHolding("5351", "鈺創", entryAveragePrice: 100m, currentPrice: null, currentPriceIssue: "#N/A（DDE 尚未取得資料）", excelRow: 5)
         ];
 
@@ -90,7 +90,7 @@ public sealed class IntradayMonitoringServiceTests
         var fixture = CreateFixture();
 
         // 第一分鐘：成立 → 新通知。
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
         var tick1 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(1, tick1.NewNotificationCount);
 
@@ -102,9 +102,9 @@ public sealed class IntradayMonitoringServiceTests
         Assert.All(fixture.StateRepository.GetStatesSnapshot().Where(x => x.AlertKind == AlertKind.MovingAverageTriggered),
             state => Assert.True(state.IsActive));
 
-        // 第三分鐘：現價跌破所有均線 → 條件不成立，記錄清除。
+        // 第三分鐘：兩個價格都高於所有通知用均線 → 條件不成立，記錄清除。
         fixture.Clock.Advance(TimeSpan.FromMinutes(1));
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 100m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
         var tick3 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(0, tick3.NewNotificationCount);
         Assert.Equal(0, tick3.ActiveTriggerCount);
@@ -117,7 +117,7 @@ public sealed class IntradayMonitoringServiceTests
 
         // 第四分鐘：再次成立 → 可以再次通知。
         fixture.Clock.Advance(TimeSpan.FromMinutes(1));
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
         var tick4 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(1, tick4.NewNotificationCount);
     }
@@ -126,13 +126,13 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 程式重啟後從SQLite恢復狀態_持續成立的條件不重複通知()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
         var tick1 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(1, tick1.NewNotificationCount);
 
         // 以同一個狀態儲存庫建立全新的 Service 實例，模擬程式重啟。
         var restarted = CreateFixture(fixture.StateRepository, fixture.Clock);
-        restarted.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
+        restarted.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
         restarted.Clock.Advance(TimeSpan.FromMinutes(1));
         var tick2 = await restarted.Service.RunOnceAsync(false, restarted.Clock.GetTaipeiNow(), CancellationToken.None);
 
@@ -144,11 +144,11 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 不同持股列與不同MA條件的通知狀態互相獨立_不互相覆蓋()
     {
         var fixture = CreateFixture();
-        // A（列 4）：進場價與現價高於全部均線 → MA5／MA20／MA120 三個條件成立。
-        // B（列 5）：介於 MA120（860）與 MA20（880）之間 → 只有 MA120 成立。
+        // A（列 4）：全部通知用均線皆高於進場價與現價 → MA5／MA20／MA120 三個條件成立。
+        // B（列 5）：價格介於 MA20（870）與 MA120（890）之間 → 只有 MA120 成立。
         fixture.Excel.Holdings =
         [
-            CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4),
+            CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4),
             CreateHolding("2330", "台積電", entryAveragePrice: 875m, currentPrice: 870m, excelRow: 5)
         ];
 
@@ -161,12 +161,12 @@ public sealed class IntradayMonitoringServiceTests
         Assert.Equal(3, states.Count(x => x.ExcelRow == 4 && x.IsActive)); // MA5／MA20／MA120
         Assert.Single(states, x => x.ExcelRow == 5 && x.MaWindow == 120 && x.IsActive);
 
-        // B 跌破 MA120 → 只清除 B 的狀態，A 的三個條件不受影響、也不重複通知。
+        // B 的兩個價格都高於 MA120 → 條件不成立，只清除 B 的狀態，A 的三個條件不受影響、也不重複通知。
         fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         fixture.Excel.Holdings =
         [
-            CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4),
-            CreateHolding("2330", "台積電", entryAveragePrice: 875m, currentPrice: 100m, excelRow: 5)
+            CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4),
+            CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 5)
         ];
         var tick2 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
 
@@ -204,7 +204,7 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 執行鎖被收盤更新持有時_盤中Tick直接記錄略過不排隊()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
 
         using (await fixture.Gate.EnterAsync("收盤更新", CancellationToken.None))
         {
@@ -235,7 +235,7 @@ public sealed class IntradayMonitoringServiceTests
         // 修復後下一分鐘照常成功；失敗不影響去重狀態的正確性。
         fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         fixture.Excel.ThrowOnRead = null;
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
         var next = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(IntradayRunStatus.Succeeded, next.Status);
         Assert.Equal(1, next.NewNotificationCount);
@@ -268,8 +268,8 @@ public sealed class IntradayMonitoringServiceTests
 
         var baselineMovingAverages = new Dictionary<string, MovingAverageResult>(StringComparer.OrdinalIgnoreCase)
         {
-            // 上一交易日（2026-07-13）已保存的均價快照：MA5=890／MA20=880／MA60=870／MA120=860。
-            ["2330"] = new("2330", BaselineDate, 900m, 890m, 880m, 870m, 860m, 120, CalculationStatus.Ok, BaselineDate),
+            // 上一交易日（2026-07-13）已保存的均價快照：MA5=860／MA20=870／MA60=880／MA120=890。
+            ["2330"] = new("2330", BaselineDate, 900m, 860m, 870m, 880m, 890m, 120, CalculationStatus.Ok, BaselineDate),
             ["5351"] = new("5351", BaselineDate, 100m, 95m, 90m, 85m, 80m, 120, CalculationStatus.Ok, BaselineDate)
         };
 

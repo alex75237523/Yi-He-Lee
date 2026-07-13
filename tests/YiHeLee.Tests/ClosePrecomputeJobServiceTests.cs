@@ -144,8 +144,10 @@ public sealed class ClosePrecomputeJobServiceTests : IDisposable
         }
 
         // 收盤更新結束後，鎖釋放，盤中判斷可正常進入。
-        using var ticket = gate.TryEnter("盤中判斷");
-        Assert.NotNull(ticket);
+        using (var ticket = gate.TryEnter("盤中判斷"))
+        {
+            Assert.NotNull(ticket);
+        }
 
         // 而收盤流程本身在鎖可用時照常成功。
         var summary = await service.RunAsync(isManualRun: true, CancellationToken.None, TradeDate);

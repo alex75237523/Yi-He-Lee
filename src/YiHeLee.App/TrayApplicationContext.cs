@@ -163,7 +163,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             await _scheduleCoordinator.StartAsync();
             if (settings.EnableIntradayMonitoring || settings.EnableDailySchedule)
             {
-                SetStatus("排程執行中：交易日 09:00～13:30 盤中每分鐘判斷，13:35 收盤更新", 0);
+                SetStatus("排程執行中：交易日 09:00～13:30 盤中自動判斷，13:35 收盤更新", 0);
             }
             else
             {
@@ -177,7 +177,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             else if (!args.Any(x => string.Equals(x, "--minimized", StringComparison.OrdinalIgnoreCase)))
             {
                 ShowTrayBalloon("Yi He Lee 已啟動",
-                    "程式已常駐右下角。交易日 09:00～13:30 盤中每分鐘判斷（使用上一交易日均價），13:35 收盤更新。",
+                    "程式已常駐右下角。交易日 09:00～13:30 盤中自動判斷（使用上一交易日均價），13:35 收盤更新。",
                     ToolTipIcon.Info);
             }
         }));

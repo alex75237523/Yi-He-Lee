@@ -8,7 +8,7 @@ namespace YiHeLee.Tests;
 /// <summary>
 /// 驗證盤中狀態資料表（2026-07-13 盤中／收盤流程拆分）：
 /// IntradayAlertState 以唯一鍵 Upsert、跨連線（模擬程式重啟）可恢復；
-/// IntradayEvaluationRun 保存每分鐘摘要；Migration 不影響既有 JobRuns 等正式資料表。
+/// IntradayEvaluationRun 保存每次 Tick 摘要；Migration 不影響既有 JobRuns 等正式資料表。
 /// </summary>
 public sealed class SqliteIntradayStateRepositoryTests : IDisposable
 {
@@ -83,7 +83,7 @@ public sealed class SqliteIntradayStateRepositoryTests : IDisposable
     }
 
     [Fact]
-    public async Task 盤中執行摘要每分鐘一筆_可依判斷日由新到舊查詢()
+    public async Task 盤中執行摘要每次Tick一筆_可依判斷日由新到舊查詢()
     {
         var repository = new SqliteIntradayStateRepository(_databasePath, _clock);
         await repository.InitializeAsync();

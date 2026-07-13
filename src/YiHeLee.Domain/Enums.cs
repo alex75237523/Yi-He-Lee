@@ -128,7 +128,7 @@ public enum StockPriceImportTaskStatus
 }
 
 /// <summary>
-/// 盤中每分鐘判斷單次執行狀態（2026-07-13 盤中／收盤流程拆分新增）。
+/// 盤中自動判斷單次執行狀態（2026-07-13 盤中／收盤流程拆分新增）。
 /// 盤中執行紀錄使用獨立的 IntradayEvaluationRun 資料表，與收盤更新的 JobRuns 語意分開，不得混用。
 /// </summary>
 public enum IntradayRunStatus
@@ -154,7 +154,7 @@ public enum IntradayRunStatus
 /// </summary>
 public enum MarketWorkflowPhase
 {
-    /// <summary>盤中監控執行中（09:00～13:30，每分鐘判斷一次）。</summary>
+    /// <summary>盤中監控執行中（09:00～13:30，依 IntradayCheckIntervalSeconds 判斷）。</summary>
     IntradayMonitoring = 1,
 
     /// <summary>盤中監控已結束，等待 13:35 收盤更新。</summary>

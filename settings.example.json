@@ -1,6 +1,7 @@
 {
   "WorkbookPath": "C:\\Data\\親帶績效最新版0701.xlsx",
   "OutputWorksheetName": "每日五日均價策略",
+  "AppIconPath": "",
   "ExcludedWorksheetNames": ["總表", "每日五日均價策略"],
   "DailyRunTime": "13:35:00",
   "RetryIntervalMinutes": 10,
@@ -15,8 +16,8 @@
   "CreateOutputWorksheetIfMissing": true,
   "ShowExcelSafetyPrompt": true,
   "AutoOpenWorkbookIfClosed": true,
-  "ShowHistoricalPriceButton": false,
-  "ShowStatusText": false,
+  "ShowHistoricalPriceButton": true,
+  "ShowStatusText": true,
   "ExcludedHoldingFillColors": ["#92D050"],
   "ExcludedHoldingTextMarkers": ["不判斷", "不用判斷", "忽略", "已出場", "暫停判斷"],
   "OfficialMarketData": {

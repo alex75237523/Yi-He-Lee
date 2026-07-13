@@ -134,9 +134,9 @@ dotnet test .\tests\YiHeLee.Tests\YiHeLee.Tests.csproj -c Release --no-build
 
 不建議放在 `C:\Program Files` 等需要系統管理員權限的目錄；建議放在桌面、文件、D 槽或其他可寫資料夾。
 
-## 版本與 Git Commit 可追溯性（2026-07-11 新增）
+## 版本、圖示與 Git Commit 可追溯性（2026-07-13 更新）
 
-啟動時會將程式版本、Git Commit SHA、Git 分支、Build 時間、執行檔完整路徑、SQLite 完整路徑、Excel 完整路徑寫入 Log，主視窗標題列也會顯示簡短版本與 Commit SHA，方便確認目前啟動的不是舊資料夾裡的舊 EXE。正式發佈請使用 `scripts\publish-win-x64.ps1`，會在輸出資料夾另外產生 `buildinfo.json`；直接以 `dotnet build`／`dotnet run` 執行（沒有 `buildinfo.json`）時會明確標示「未透過 publish 腳本發佈」。
+啟動時會將程式版本、Git Commit SHA、Git 分支、Build 時間、執行檔完整路徑、SQLite 完整路徑、Excel 完整路徑寫入 Log，主視窗標題列也會顯示簡短版本與 Commit SHA（例如 `Yi He Lee － V1.3 (a1b2c3d4e5f6)`），方便確認目前啟動的不是舊資料夾裡的舊 EXE。正式發佈請使用 `scripts\publish-win-x64.ps1`，會在輸出資料夾另外產生 `buildinfo.json`；直接以 `dotnet build`／`dotnet run` 執行（沒有 `buildinfo.json`）時會明確標示「未透過 publish 腳本發佈」。V1.3 起內建新版系統匣／視窗圖示，設定頁「程式圖示」可指定自訂 `.ico` 或圖片路徑；留空或路徑失效時使用內建圖示。
 
 ## 權限設計
 

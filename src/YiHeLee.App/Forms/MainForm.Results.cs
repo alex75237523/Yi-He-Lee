@@ -455,16 +455,16 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// 「判斷明細」欄位：讓一般使用者不需理解程式邏輯即可看懂為何成立，例如：
-    /// 「MA20：均價 480 >= 進場價/平均價 470；均價 480 < 現價 500；至少一項條件成立」。
-    /// 只列出實際成立的均價；同時符合多條均價時以換行分隔，方便閱讀。
+    /// 「20日均價已 >= 進場價/平均價 470」。
+    /// 只列出實際成立的價格條件；未成立的比較不顯示。同時符合多條均價或價格時以換行分隔，方便閱讀。
     /// internal 供 <c>MainFormResultsFormattingTests</c>（由 InternalsVisibleTo 開放給測試專案）驗證輸出文字。
     /// </summary>
     internal static string BuildJudgmentDetail(StrategyAlert alert)
     {
         var lines = new List<string>();
-        AppendJudgmentLine(lines, "MA5", alert.TriggeredMa5, alert.MovingAverage5, alert.EntryAveragePrice, alert.CurrentPrice);
-        AppendJudgmentLine(lines, "MA20", alert.TriggeredMa20, alert.MovingAverage20, alert.EntryAveragePrice, alert.CurrentPrice);
-        AppendJudgmentLine(lines, "MA120", alert.TriggeredMa120, alert.MovingAverage120, alert.EntryAveragePrice, alert.CurrentPrice);
+        AppendJudgmentLine(lines, "5日均價", alert.TriggeredMa5, alert.MovingAverage5, alert.EntryAveragePrice, alert.CurrentPrice);
+        AppendJudgmentLine(lines, "20日均價", alert.TriggeredMa20, alert.MovingAverage20, alert.EntryAveragePrice, alert.CurrentPrice);
+        AppendJudgmentLine(lines, "120日均價", alert.TriggeredMa120, alert.MovingAverage120, alert.EntryAveragePrice, alert.CurrentPrice);
         return lines.Count > 0 ? string.Join("\r\n", lines) : string.Empty;
     }
 
@@ -481,9 +481,15 @@ internal sealed partial class MainForm
             return;
         }
 
-        var entryComparison = ma >= entry ? ">=" : "<";
-        var currentComparison = ma >= current ? ">=" : "<";
-        lines.Add($"{label}：均價 {ma:0.##} {entryComparison} 進場價/平均價 {entry:0.##}；均價 {ma:0.##} {currentComparison} 現價 {current:0.##}；至少一項條件成立");
+        if (ma >= entry)
+        {
+            lines.Add($"{label}已 >= 進場價/平均價 {entry:0.##}");
+        }
+
+        if (ma >= current)
+        {
+            lines.Add($"{label}已 >= 現價 {current:0.##}");
+        }
     }
 
     private static string FormatDecimal(decimal? value) => value?.ToString("0.##") ?? string.Empty;

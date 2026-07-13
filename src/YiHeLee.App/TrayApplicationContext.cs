@@ -7,12 +7,16 @@ using YiHeLee.Domain;
 
 namespace YiHeLee.App;
 
-/// <summary>常駐 Windows 右下角系統匣，負責 UI 互動；商業流程仍由 Application Service 執行。</summary>
+/// <summary>常駐 Windows 右下角系統匣，負責 UI 互動；商業流程仍由 Application Service 執行。
+/// 2026-07-13 盤中／收盤流程拆分：手動操作分為「立即執行盤中判斷」與「立即執行收盤更新」兩個明確項目；
+/// 系統匣文字依時段顯示盤中監控／等待收盤／已完成／基準未就緒，不再只顯示「等待每日 13:35」。</summary>
 internal sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly AppPaths _paths;
-    private readonly DailyJobService _dailyJobService;
-    private readonly DailyScheduleCoordinator _scheduleCoordinator;
+    private readonly IntradayMonitoringService _intradayMonitoringService;
+    private readonly ClosePrecomputeJobService _closePrecomputeJobService;
+    private readonly MarketWorkflowScheduleCoordinator _scheduleCoordinator;
+    private readonly IClock _clock;
     private readonly ISettingsStore _settingsStore;
     private readonly SettingsValidationService _validationService;
     private readonly IYiHeLeeRepository _repository;
@@ -28,7 +32,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _notifyIcon;
     private Icon _trayIcon;
     private readonly ToolStripMenuItem _statusItem;
-    private readonly ToolStripMenuItem _runNowItem;
+    private readonly ToolStripMenuItem _runIntradayItem;
+    private readonly ToolStripMenuItem _runCloseItem;
     private readonly ToolStripMenuItem _settingsItem;
     private readonly ToolStripMenuItem _openExcelItem;
     private readonly ToolStripMenuItem _historicalPriceItem;
@@ -42,12 +47,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // 最後一次狀態，供主視窗建立（或重建）時補上，避免顯示過時的「初始化中」。
     private string _lastStatusMessage = "初始化中";
     private int _lastStatusPercent;
+    private MarketWorkflowStatusSnapshot? _lastWorkflowStatus;
 
     public TrayApplicationContext(
         string[] args,
         AppPaths paths,
-        DailyJobService dailyJobService,
-        DailyScheduleCoordinator scheduleCoordinator,
+        IntradayMonitoringService intradayMonitoringService,
+        ClosePrecomputeJobService closePrecomputeJobService,
+        MarketWorkflowScheduleCoordinator scheduleCoordinator,
+        IClock clock,
         ISettingsStore settingsStore,
         SettingsValidationService validationService,
         IYiHeLeeRepository repository,
@@ -61,8 +69,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         IStockPriceValidationService stockPriceValidationService)
     {
         _paths = paths;
-        _dailyJobService = dailyJobService;
+        _intradayMonitoringService = intradayMonitoringService;
+        _closePrecomputeJobService = closePrecomputeJobService;
         _scheduleCoordinator = scheduleCoordinator;
+        _clock = clock;
         _settingsStore = settingsStore;
         _validationService = validationService;
         _repository = repository;
@@ -89,7 +99,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _userInteraction.ExcelSafetyConfirmationHandler = ConfirmExcelSafetyAsync;
 
         _statusItem = new ToolStripMenuItem("狀態：初始化中") { Enabled = false };
-        _runNowItem = new ToolStripMenuItem("立即執行", null, async (_, _) => await RunNowAsync());
+        // 「立即執行」語意已不清楚：改為兩個明確操作，避免使用者混淆盤中判斷與收盤更新。
+        _runIntradayItem = new ToolStripMenuItem("立即執行盤中判斷", null, async (_, _) => await RunIntradayNowAsync());
+        _runCloseItem = new ToolStripMenuItem("立即執行收盤更新", null, async (_, _) => await RunCloseNowAsync(null));
         _settingsItem = new ToolStripMenuItem("設定", null, async (_, _) =>
         {
             await ShowMainWindowAsync();
@@ -109,7 +121,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.AddRange([
             _statusItem,
             new ToolStripSeparator(),
-            _runNowItem,
+            _runIntradayItem,
+            _runCloseItem,
             _settingsItem,
             _openExcelItem,
             _historicalPriceItem,
@@ -125,7 +138,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notifyIcon = new NotifyIcon
         {
             Icon = _trayIcon,
-            Text = "Yi He Lee－等待每日 13:35",
+            Text = "Yi He Lee－初始化中",
             Visible = true,
             ContextMenuStrip = menu
         };
@@ -135,6 +148,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _userInteraction.ProgressDetailChanged += SetProgressDetail;
         _userInteraction.Succeeded += ShowSuccessCenter;
         _userInteraction.Failed += ShowFailureCenter;
+        _intradayMonitoringService.RunCompleted += OnIntradayRunCompleted;
+        _scheduleCoordinator.StatusChanged += OnWorkflowStatusChanged;
 
         var forceSettings = args.Any(x => string.Equals(x, "--settings", StringComparison.OrdinalIgnoreCase));
         _dispatcherForm.BeginInvoke(new Action(async () =>
@@ -144,15 +159,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // 依 config 旗標同步系統匣選單「歷史收盤價」項目的顯示狀態。
             _historicalPriceItem.Visible = settings.ShowHistoricalPriceButton;
 
-            // 依設定啟動排程。
-            if (settings.EnableDailySchedule)
+            // 排程一律啟動；盤中監控與收盤更新是否實際執行由排程器依設定與時段決定。
+            await _scheduleCoordinator.StartAsync();
+            if (settings.EnableIntradayMonitoring || settings.EnableDailySchedule)
             {
-                await _scheduleCoordinator.StartAsync();
-                SetStatus("等待每日台北時間 13:35，自動執行中", 0);
+                SetStatus("排程執行中：交易日 09:00～13:30 盤中每分鐘判斷，13:35 收盤更新", 0);
             }
             else
             {
-                SetStatus("每日排程已停用，可按「立即執行」手動執行", 0);
+                SetStatus("盤中監控與收盤更新排程皆已停用，可由選單手動執行", 0);
             }
             if (forceSettings || string.IsNullOrWhiteSpace(settings.WorkbookPath))
             {
@@ -161,7 +176,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
             else if (!args.Any(x => string.Equals(x, "--minimized", StringComparison.OrdinalIgnoreCase)))
             {
-                ShowTrayBalloon("Yi He Lee 已啟動", "程式已常駐右下角，將於每日台北時間 13:35 執行。", ToolTipIcon.Info);
+                ShowTrayBalloon("Yi He Lee 已啟動",
+                    "程式已常駐右下角。交易日 09:00～13:30 盤中每分鐘判斷（使用上一交易日均價），13:35 收盤更新。",
+                    ToolTipIcon.Info);
             }
         }));
     }
@@ -176,21 +193,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _administratorItem.Enabled = false;
     }
 
-    private async Task RunNowAsync(DateOnly? manualTargetDate = null)
+    /// <summary>手動「立即執行盤中判斷」：只使用上一交易日已保存均價，不抓任何官方資料、不寫 Excel。</summary>
+    private async Task RunIntradayNowAsync()
     {
         if (_isExiting)
         {
             return;
         }
 
-        if (_manualRunTask is { IsCompleted: false } || _dailyJobService.IsRunning)
+        if (_manualRunTask is { IsCompleted: false } || _closePrecomputeJobService.IsRunning)
         {
             MessageBox.Show("目前已有工作正在執行。", "Yi He Lee", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        _runNowItem.Enabled = false;
-        _manualRunTask = RunManualCoreAsync(manualTargetDate);
+        SetManualButtonsEnabled(false);
+        _manualRunTask = RunIntradayCoreAsync();
         try
         {
             await _manualRunTask;
@@ -199,25 +217,157 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             if (!_isExiting)
             {
-                _runNowItem.Enabled = true;
+                SetManualButtonsEnabled(true);
             }
         }
     }
 
-    private async Task RunManualCoreAsync(DateOnly? manualTargetDate)
+    private async Task RunIntradayCoreAsync()
     {
         try
         {
-            await _dailyJobService.RunAsync(isManualRun: true, _lifetimeCts.Token, manualTargetDate);
+            await _intradayMonitoringService.RunOnceAsync(isManualRun: true, _clock.GetTaipeiNow(), _lifetimeCts.Token);
         }
         catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
         {
         }
         catch (Exception ex)
         {
-            _logger.Error("手動執行發生未處理錯誤。", ex);
-            SetStatus("手動執行失敗", 0);
-            MessageBox.Show(ex.Message, "Yi He Lee－執行失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _logger.Error("手動執行盤中判斷發生未處理錯誤。", ex);
+            SetStatus("手動盤中判斷失敗", 0);
+            MessageBox.Show(ex.Message, "Yi He Lee－盤中判斷失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    /// <summary>手動「立即執行收盤更新」：官方收盤價與均價前置更新；指定過去日期仍屬收盤／歷史資料流程，
+    /// 不啟動盤中客戶判斷，且仍遵守官方來源日期規則。</summary>
+    private async Task RunCloseNowAsync(DateOnly? manualTargetDate)
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        if (_manualRunTask is { IsCompleted: false } || _closePrecomputeJobService.IsRunning)
+        {
+            MessageBox.Show("目前已有工作正在執行。", "Yi He Lee", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        SetManualButtonsEnabled(false);
+        _manualRunTask = RunCloseCoreAsync(manualTargetDate);
+        try
+        {
+            await _manualRunTask;
+        }
+        finally
+        {
+            if (!_isExiting)
+            {
+                SetManualButtonsEnabled(true);
+            }
+        }
+    }
+
+    private async Task RunCloseCoreAsync(DateOnly? manualTargetDate)
+    {
+        try
+        {
+            await _closePrecomputeJobService.RunAsync(isManualRun: true, _lifetimeCts.Token, manualTargetDate);
+        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("手動執行收盤更新發生未處理錯誤。", ex);
+            SetStatus("手動收盤更新失敗", 0);
+            MessageBox.Show(ex.Message, "Yi He Lee－收盤更新失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void SetManualButtonsEnabled(bool enabled)
+    {
+        _runIntradayItem.Enabled = enabled;
+        _runCloseItem.Enabled = enabled;
+    }
+
+    /// <summary>盤中判斷完成：中央結果畫面持續更新目前成立清單，但只有新觸發或重要錯誤才主動彈出。</summary>
+    private void OnIntradayRunCompleted(IntradayRunSummary summary)
+    {
+        if (_isExiting || _dispatcherForm.IsDisposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _dispatcherForm.BeginInvoke(new Action(async () =>
+            {
+                var jobSummary = ToJobRunSummary(summary);
+                if (summary.NewNotificationCount > 0)
+                {
+                    ShowTrayBalloon("Yi He Lee 盤中新通知",
+                        $"新觸發 {summary.NewNotificationCount} 筆（基準 {summary.BaselineTradeDate:yyyy-MM-dd}）。", ToolTipIcon.Info);
+                    await ShowMainWindowAsync();
+                    _mainForm!.SwitchToResultsTab(jobSummary, isSuccess: true);
+                }
+                else if (summary.Status == IntradayRunStatus.Failed)
+                {
+                    ShowTrayBalloon("Yi He Lee 盤中判斷失敗", summary.Message, ToolTipIcon.Error);
+                    await ShowMainWindowAsync();
+                    _mainForm!.SwitchToResultsTab(jobSummary, isSuccess: false);
+                }
+            }));
+        }
+        catch (ObjectDisposedException)
+        {
+            // 結束流程中不再更新畫面。
+        }
+    }
+
+    /// <summary>把盤中彙整結果轉成既有中央結果畫面可顯示的摘要；不寫入 JobRuns，僅供畫面呈現。</summary>
+    private static JobRunSummary ToJobRunSummary(IntradayRunSummary summary)
+        => new(
+            Guid.NewGuid(),
+            summary.EvaluationDate,
+            summary.Status is IntradayRunStatus.Succeeded or IntradayRunStatus.PartialSuccess
+                ? JobStatus.Succeeded
+                : JobStatus.CrawlFailed,
+            summary.Status == IntradayRunStatus.Failed ? RunOutcome.RetryableFailure : RunOutcome.Success,
+            summary.Message,
+            0,
+            0,
+            summary.HoldingCount,
+            summary.ActiveTriggerCount,
+            summary.MissingMovingAverageCount,
+            summary.ScheduledAt,
+            summary.EvaluatedAt,
+            summary.Alerts,
+            []);
+
+    /// <summary>排程狀態變更：更新系統匣文字與主視窗狀態列（依時段顯示，不再只顯示「等待每日 13:35」）。</summary>
+    private void OnWorkflowStatusChanged(MarketWorkflowStatusSnapshot snapshot)
+    {
+        if (_isExiting || _dispatcherForm.IsDisposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _dispatcherForm.BeginInvoke(new Action(() =>
+            {
+                _lastWorkflowStatus = snapshot;
+                var text = snapshot.StatusText;
+                _notifyIcon.Text = "Yi He Lee－" + (text.Length > 45 ? text[..45] : text);
+                _statusItem.Text = text.Length > 80 ? $"狀態：{text[..77]}..." : $"狀態：{text}";
+                _mainForm?.UpdateWorkflowStatus(snapshot);
+            }));
+        }
+        catch (ObjectDisposedException)
+        {
+            // 結束流程中不再更新畫面。
         }
     }
 
@@ -235,13 +385,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 current,
                 _validationService,
                 SaveSettingsAsync,
-                RunNowAsync,
+                RunIntradayNowAsync,
+                RunCloseNowAsync,
                 OpenConfiguredExcelAsync,
                 ShowHistoricalPriceForm,
                 () => OpenFolder(_paths.LogDirectory));
 
             // 主視窗可能在狀態已更新後才建立，補上最後一次狀態，避免顯示過時的「初始化中」。
             _mainForm.UpdateStatus(_lastStatusMessage, _lastStatusPercent);
+            if (_lastWorkflowStatus is not null)
+            {
+                _mainForm.UpdateWorkflowStatus(_lastWorkflowStatus);
+            }
         }
 
         _mainForm.ShowAndActivate();
@@ -284,7 +439,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 MessageBoxIcon.Warning);
         }
 
-        SetStatus("設定已儲存，等待每日台北時間 13:35", 0);
+        SetStatus("設定已儲存，排程將於下一次檢查時套用", 0);
     }
 
     private void ApplyTrayIcon(AppSettings settings)
@@ -400,7 +555,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _isExiting = true;
-        _runNowItem.Enabled = false;
+        SetManualButtonsEnabled(false);
         _settingsItem.Enabled = false;
         _openExcelItem.Enabled = false;
         _lifetimeCts.Cancel();
@@ -434,6 +589,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _userInteraction.ProgressDetailChanged -= SetProgressDetail;
             _userInteraction.Succeeded -= ShowSuccessCenter;
             _userInteraction.Failed -= ShowFailureCenter;
+            _intradayMonitoringService.RunCompleted -= OnIntradayRunCompleted;
+            _scheduleCoordinator.StatusChanged -= OnWorkflowStatusChanged;
             _lifetimeCts.Dispose();
             try
             {

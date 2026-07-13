@@ -5,6 +5,15 @@ public sealed class AppSettings
 {
     public static readonly TimeOnly FixedDailyRunTime = new(13, 35);
 
+    /// <summary>盤中監控開始時間（台北時間，含）。正式預設值為程式常數，不得由設定頁改成不合理時間。</summary>
+    public static readonly TimeOnly IntradayMonitoringStartTime = new(9, 0);
+
+    /// <summary>盤中監控結束時間（台北時間，不含）；13:30 起停止盤中判斷，13:35 執行收盤更新。</summary>
+    public static readonly TimeOnly IntradayMonitoringEndTime = new(13, 30);
+
+    /// <summary>盤中判斷頻率：每 1 分鐘一次，並對齊整分鐘執行。</summary>
+    public static readonly TimeSpan IntradayEvaluationInterval = TimeSpan.FromMinutes(1);
+
     public string WorkbookPath { get; set; } = string.Empty;
     public string OutputWorksheetName { get; set; } = "每日五日均價策略";
     public List<string> ExcludedWorksheetNames { get; set; } = ["總表", "每日五日均價策略"];
@@ -45,9 +54,13 @@ public sealed class AppSettings
     /// <summary>是否啟用鉅亨網址均價交叉比對；關閉時仍保留固定來源與正式 TWSE／TPEx 均價計算。</summary>
     public bool EnableCnyesMovingAverageComparison { get; set; } = false;
 
-    /// <summary>每日 13:35 自動排程是否啟用。設為 false 時排程不執行，使用者仍可手動「立即執行」。
+    /// <summary>每日 13:35 收盤更新自動排程是否啟用。設為 false 時排程不執行，使用者仍可手動「立即執行收盤更新」。
     /// 2026-07-11 新增，預設啟用以保持既有行為。</summary>
     public bool EnableDailySchedule { get; set; } = true;
+
+    /// <summary>盤中每分鐘監控是否啟用（2026-07-13 盤中／收盤流程拆分新增）。設為 false 時盤中排程不執行，
+    /// 使用者仍可手動「立即執行盤中判斷」。盤中時段（09:00～13:30）與每分鐘頻率為程式常數，不開放設定頁修改。</summary>
+    public bool EnableIntradayMonitoring { get; set; } = true;
 
     /// <summary>
     /// 持股列若「股名」儲存格套用這些 RGB 填滿色，就視為人工標記的不判斷資料。

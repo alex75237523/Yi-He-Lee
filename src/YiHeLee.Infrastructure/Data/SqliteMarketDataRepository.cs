@@ -807,6 +807,71 @@ public sealed class SqliteMarketDataRepository : IMarketDataRepository
         return value is null or DBNull ? null : DateOnly.ParseExact((string)value, "yyyy-MM-dd", CultureInfo.InvariantCulture);
     }
 
+    /// <summary>取得指定日期（不含）之前已保存官方收盤價的最新交易日期；供解析「真正的上一交易日」（2026-07-13 新增）。</summary>
+    public async Task<DateOnly?> GetLatestPriceTradeDateBeforeAsync(DateOnly beforeDate, CancellationToken cancellationToken)
+    {
+        const string sql = "SELECT MAX(TradeDate) FROM StockDailyPrice WHERE TradeDate < $beforeDate;";
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$beforeDate", ToDate(beforeDate));
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull ? null : DateOnly.ParseExact((string)value, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>取得指定日期（不含）之前已保存均線快照的最新交易日期；與收盤價最新日期不一致代表快照不完整（2026-07-13 新增）。</summary>
+    public async Task<DateOnly?> GetLatestMovingAverageTradeDateBeforeAsync(DateOnly beforeDate, CancellationToken cancellationToken)
+    {
+        const string sql = "SELECT MAX(TradeDate) FROM StockMovingAverage WHERE TradeDate < $beforeDate;";
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$beforeDate", ToDate(beforeDate));
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull ? null : DateOnly.ParseExact((string)value, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// 取得指定日期（不含）之前，每日排程（JobType=DailyMarketData）曾嘗試收盤更新且狀態非休市的最新目標日期；
+    /// 晚於已保存收盤價的最新日期時代表上一交易日收盤更新未成功（2026-07-13 新增）。
+    /// </summary>
+    public async Task<DateOnly?> GetLatestDailyCloseAttemptDateBeforeAsync(DateOnly beforeDate, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT MAX(TargetDate)
+            FROM OfficialPriceBatch
+            WHERE TargetDate < $beforeDate
+              AND JobType = $jobType
+              AND Status <> $holidayStatus;
+            """;
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$beforeDate", ToDate(beforeDate));
+        command.Parameters.AddWithValue("$jobType", (int)OfficialPriceJobType.DailyMarketData);
+        command.Parameters.AddWithValue("$holidayStatus", (int)OfficialPriceBatchStatus.Holiday);
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull ? null : DateOnly.ParseExact((string)value, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>指定日期是否已有官方批次明確記錄為休市（任一來源、任一批次類型 Status=Holiday）（2026-07-13 新增）。</summary>
+    public async Task<bool> HasHolidayBatchAsync(DateOnly targetDate, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM OfficialPriceBatch
+            WHERE TargetDate = $targetDate
+              AND Status = $holidayStatus;
+            """;
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$targetDate", ToDate(targetDate));
+        command.Parameters.AddWithValue("$holidayStatus", (int)OfficialPriceBatchStatus.Holiday);
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is not (null or DBNull) && Convert.ToInt64(value, CultureInfo.InvariantCulture) > 0;
+    }
+
     public async Task<IReadOnlySet<string>> GetConfirmedNoEmergingDataCodesAsync(
         DateOnly tradeDate,
         IReadOnlyCollection<string> stockCodes,

@@ -70,6 +70,14 @@ internal static class Program
         var workflowExecutionGate = new WorkflowExecutionGate();
         var tradingDateResolver = new TradingDateResolver(marketDataRepository);
         var intradayStateRepository = new SqliteIntradayStateRepository(paths.DatabasePath, clock);
+        var baselinePreparationService = new BaselinePreparationService(
+            marketDataRepository,
+            marketPriceService,
+            movingAverageService,
+            tradingDateResolver,
+            clock,
+            userInteraction,
+            logger);
         var closePrecomputeJobService = new ClosePrecomputeJobService(
             clock,
             settingsStore,
@@ -94,7 +102,9 @@ internal static class Program
             strategyService,
             intradayStateRepository,
             workflowExecutionGate,
-            logger);
+            logger,
+            baselinePreparationService,
+            userInteraction);
         var scheduleCoordinator = new MarketWorkflowScheduleCoordinator(
             intradayMonitoringService,
             closePrecomputeJobService,

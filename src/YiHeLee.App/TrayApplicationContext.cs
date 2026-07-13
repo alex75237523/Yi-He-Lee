@@ -309,12 +309,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 {
                     ShowTrayBalloon("Yi He Lee 盤中新通知",
                         $"新觸發 {summary.NewNotificationCount} 筆（基準 {summary.BaselineTradeDate:yyyy-MM-dd}）。", ToolTipIcon.Info);
-                    await ShowMainWindowAsync();
-                    _mainForm!.SwitchToResultsTab(jobSummary, isSuccess: true);
                 }
-                else if (summary.Status == IntradayRunStatus.Failed)
+
+                if (summary.Status is IntradayRunStatus.Succeeded or IntradayRunStatus.PartialSuccess)
                 {
-                    ShowTrayBalloon("Yi He Lee 盤中判斷失敗", summary.Message, ToolTipIcon.Error);
+                    if (ShouldShowIntradayResultWindow(summary, _mainForm?.IsResultsTabVisible == true))
+                    {
+                        await ShowMainWindowAsync();
+                        _mainForm!.SwitchToResultsTab(jobSummary, isSuccess: true);
+                    }
+
+                    return;
+                }
+
+                if (ShouldShowIntradayResultWindow(summary, _mainForm?.IsResultsTabVisible == true))
+                {
+                    if (summary.Status == IntradayRunStatus.Failed)
+                    {
+                        ShowTrayBalloon("Yi He Lee 盤中判斷失敗", summary.Message, ToolTipIcon.Error);
+                    }
+
                     await ShowMainWindowAsync();
                     _mainForm!.SwitchToResultsTab(jobSummary, isSuccess: false);
                 }
@@ -327,14 +341,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>把盤中彙整結果轉成既有中央結果畫面可顯示的摘要；不寫入 JobRuns，僅供畫面呈現。</summary>
-    private static JobRunSummary ToJobRunSummary(IntradayRunSummary summary)
+    internal static JobRunSummary ToJobRunSummary(IntradayRunSummary summary)
         => new(
             Guid.NewGuid(),
             summary.EvaluationDate,
             summary.Status is IntradayRunStatus.Succeeded or IntradayRunStatus.PartialSuccess
                 ? JobStatus.Succeeded
                 : JobStatus.CrawlFailed,
-            summary.Status == IntradayRunStatus.Failed ? RunOutcome.RetryableFailure : RunOutcome.Success,
+            summary.Status is IntradayRunStatus.Succeeded or IntradayRunStatus.PartialSuccess
+                ? RunOutcome.Success
+                : RunOutcome.RetryableFailure,
             summary.Message,
             0,
             0,
@@ -345,6 +361,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
             summary.EvaluatedAt,
             summary.Alerts,
             []);
+
+    internal static bool ShouldShowIntradayResultWindow(IntradayRunSummary summary, bool isResultsTabVisible)
+    {
+        if (summary.Status is IntradayRunStatus.Succeeded or IntradayRunStatus.PartialSuccess)
+        {
+            return summary.IsManualRun || summary.NewNotificationCount > 0 || isResultsTabVisible;
+        }
+
+        return summary.Status == IntradayRunStatus.Failed
+               || (summary.IsManualRun && summary.Status == IntradayRunStatus.BaselineNotReady);
+    }
 
     /// <summary>排程狀態變更：更新系統匣文字與主視窗狀態列（依時段顯示，不再只顯示「等待每日 13:35」）。</summary>
     private void OnWorkflowStatusChanged(MarketWorkflowStatusSnapshot snapshot)

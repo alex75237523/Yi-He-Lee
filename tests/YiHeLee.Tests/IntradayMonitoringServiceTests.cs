@@ -66,6 +66,24 @@ public sealed class IntradayMonitoringServiceTests
     }
 
     [Fact]
+    public async Task 盤中判斷執行時_會回報目前步驟與進度條百分比()
+    {
+        var fixture = CreateFixture();
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+
+        var summary = await fixture.Service.RunOnceAsync(isManualRun: true, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
+
+        Assert.True(summary.IsManualRun);
+        Assert.Contains(fixture.UserInteraction.Statuses, x => x.Message.Contains("開始執行", StringComparison.Ordinal) && x.Percent == 5);
+        Assert.Contains(fixture.UserInteraction.Statuses, x => x.Message.Contains("讀取設定", StringComparison.Ordinal) && x.Percent == 8);
+        Assert.Contains(fixture.UserInteraction.Statuses, x => x.Message.Contains("讀取 Excel 客戶持股", StringComparison.Ordinal) && x.Percent == 60);
+        Assert.Contains(fixture.UserInteraction.Statuses, x => x.Message.Contains("比對均價條件", StringComparison.Ordinal) && x.Percent == 82);
+        Assert.Contains(fixture.UserInteraction.Statuses, x => x.Message.Contains("更新通知去重狀態", StringComparison.Ordinal) && x.Percent == 92);
+        Assert.Contains(fixture.UserInteraction.Statuses, x => x.Message.Contains("盤中判斷完成", StringComparison.Ordinal) && x.Percent == 100);
+        Assert.Contains(fixture.UserInteraction.ProgressDetails, detail => detail == string.Empty);
+    }
+
+    [Fact]
     public async Task 一筆DDE異常只影響該持股_其他持股照常判斷()
     {
         var fixture = CreateFixture();
@@ -201,6 +219,103 @@ public sealed class IntradayMonitoringServiceTests
     }
 
     [Fact]
+    public async Task 基準缺漏時_第一次執行完成準備後_同一次呼叫繼續讀Excel並判斷()
+    {
+        var preparation = new FakeBaselinePreparationService();
+        var fixture = CreateFixture(baselinePreparationService: preparation);
+        fixture.Resolver.Resolutions.Enqueue(new IntradayBaselineResolution(
+            EvaluationDate, null, false,
+            "上一交易日均價快照不存在。",
+            BaselineDate, null, BaselineDate));
+        fixture.Resolver.Resolutions.Enqueue(new IntradayBaselineResolution(
+            EvaluationDate, BaselineDate, true, null,
+            BaselineDate, BaselineDate, BaselineDate));
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+
+        var summary = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
+
+        Assert.Equal(IntradayRunStatus.Succeeded, summary.Status);
+        Assert.Equal(BaselineDate, summary.BaselineTradeDate);
+        Assert.Equal(1, preparation.EnsureCallCount);
+        Assert.Equal(1, fixture.Excel.ReadCallCount);
+        Assert.Single(summary.Alerts, x => x.AlertKind == AlertKind.MovingAverageTriggered);
+
+        var run = Assert.Single(fixture.StateRepository.SavedRuns);
+        Assert.Equal(BaselineDate, run.BaselineTradeDate);
+        Assert.Equal(1, run.HoldingCount);
+    }
+
+    [Fact]
+    public async Task 基準已完整時_直接走快速路徑_不呼叫基準準備也不回補()
+    {
+        var preparation = new FakeBaselinePreparationService();
+        var fixture = CreateFixture(baselinePreparationService: preparation);
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+
+        var summary = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
+
+        Assert.Equal(IntradayRunStatus.Succeeded, summary.Status);
+        Assert.Equal(0, preparation.EnsureCallCount);
+        Assert.Equal(1, fixture.Excel.ReadCallCount);
+        Assert.Contains("本輪只重新讀取客戶價格", summary.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task 基準準備失敗時_不得進入價格判斷()
+    {
+        var preparation = new FakeBaselinePreparationService
+        {
+            Result = new BaselinePreparationResult(
+                new BaselinePreparationState(
+                    EvaluationDate, BaselineDate, true, true, false,
+                    BaselinePreparationStatus.Partial, null,
+                    "均價快照不完整。", 2, 1),
+                PreparedThisRun: true,
+                IsAnotherPreparationRunning: false,
+                "均價快照不完整。")
+        };
+        var fixture = CreateFixture(baselinePreparationService: preparation);
+        fixture.Resolver.Resolution = new IntradayBaselineResolution(
+            EvaluationDate, null, false,
+            "上一交易日均價快照不存在。",
+            BaselineDate, null, BaselineDate);
+
+        var summary = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
+
+        Assert.Equal(IntradayRunStatus.BaselineNotReady, summary.Status);
+        Assert.Equal(1, preparation.EnsureCallCount);
+        Assert.Equal(0, fixture.Excel.ReadCallCount);
+        Assert.Empty(summary.Alerts);
+    }
+
+    [Fact]
+    public async Task 其他盤中Tick遇到基準準備中_直接略過且不讀Excel()
+    {
+        var preparation = new FakeBaselinePreparationService
+        {
+            Result = new BaselinePreparationResult(
+                new BaselinePreparationState(
+                    EvaluationDate, BaselineDate, true, false, false,
+                    BaselinePreparationStatus.Backfilling, null,
+                    "另一個盤中流程正在準備上一交易日資料。", 0, 0),
+                PreparedThisRun: false,
+                IsAnotherPreparationRunning: true,
+                "盤中監控：正在準備上一交易日資料，本次 Tick 略過，不排隊。")
+        };
+        var fixture = CreateFixture(baselinePreparationService: preparation);
+        fixture.Resolver.Resolution = new IntradayBaselineResolution(
+            EvaluationDate, null, false,
+            "上一交易日收盤價缺漏。",
+            BaselineDate, null, BaselineDate);
+
+        var summary = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
+
+        Assert.Equal(IntradayRunStatus.BaselineNotReady, summary.Status);
+        Assert.Contains("正在準備上一交易日資料", summary.Message, StringComparison.Ordinal);
+        Assert.Equal(0, fixture.Excel.ReadCallCount);
+    }
+
+    [Fact]
     public async Task 執行鎖被收盤更新持有時_盤中Tick直接記錄略過不排隊()
     {
         var fixture = CreateFixture();
@@ -258,7 +373,10 @@ public sealed class IntradayMonitoringServiceTests
         entryAveragePrice,
         entryAveragePriceIssue);
 
-    private static Fixture CreateFixture(InMemoryIntradayStateRepository? stateRepository = null, MutableClock? clock = null)
+    private static Fixture CreateFixture(
+        InMemoryIntradayStateRepository? stateRepository = null,
+        MutableClock? clock = null,
+        IBaselinePreparationService? baselinePreparationService = null)
     {
         clock ??= new MutableClock(new DateTimeOffset(EvaluationDate.ToDateTime(new TimeOnly(10, 31)), TimeSpan.FromHours(8)));
         stateRepository ??= new InMemoryIntradayStateRepository();
@@ -281,6 +399,7 @@ public sealed class IntradayMonitoringServiceTests
         };
         var gate = new WorkflowExecutionGate();
 
+        var userInteraction = new FakeUserInteraction();
         var service = new IntradayMonitoringService(
             clock,
             new FakeSettingsStore(settings),
@@ -291,9 +410,11 @@ public sealed class IntradayMonitoringServiceTests
             new StrategyEvaluationService(),
             stateRepository,
             gate,
-            new FakeLogger());
+            new FakeLogger(),
+            baselinePreparationService,
+            userInteraction);
 
-        return new Fixture(service, clock, excel, marketData, resolver, stateRepository, gate);
+        return new Fixture(service, clock, excel, marketData, resolver, stateRepository, gate, userInteraction);
     }
 
     private sealed record Fixture(
@@ -303,7 +424,8 @@ public sealed class IntradayMonitoringServiceTests
         SpyMarketDataRepository MarketData,
         FakeTradingDateResolver Resolver,
         InMemoryIntradayStateRepository StateRepository,
-        WorkflowExecutionGate Gate);
+        WorkflowExecutionGate Gate,
+        FakeUserInteraction UserInteraction);
 
     private sealed class MutableClock(DateTimeOffset now) : IClock
     {
@@ -329,12 +451,53 @@ public sealed class IntradayMonitoringServiceTests
     private sealed class FakeTradingDateResolver : ITradingDateResolver
     {
         public IntradayBaselineResolution Resolution { get; set; } = null!;
+        public Queue<IntradayBaselineResolution> Resolutions { get; } = new();
 
         public Task<IntradayBaselineResolution> ResolveBaselineAsync(DateOnly evaluationDate, CancellationToken cancellationToken)
-            => Task.FromResult(Resolution);
+            => Task.FromResult(Resolutions.Count > 0 ? Resolutions.Dequeue() : Resolution);
 
         public Task<bool> IsKnownNonTradingDayAsync(DateOnly date, CancellationToken cancellationToken)
             => Task.FromResult(date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday);
+    }
+
+    private sealed class FakeUserInteraction : IUserInteraction
+    {
+        public List<(string Message, int Percent)> Statuses { get; } = [];
+        public List<string> ProgressDetails { get; } = [];
+
+        public Task<bool> ConfirmExcelSafetyAsync(CancellationToken cancellationToken) => Task.FromResult(true);
+        public void ShowStatus(string message, int percentComplete = 0) => Statuses.Add((message, percentComplete));
+        public void ShowProgressDetail(string message) => ProgressDetails.Add(message);
+        public void ShowSuccess(JobRunSummary summary) { }
+        public void ShowFailure(JobRunSummary summary) { }
+    }
+
+    private sealed class FakeBaselinePreparationService : IBaselinePreparationService
+    {
+        public int EnsureCallCount { get; private set; }
+
+        public BaselinePreparationResult Result { get; set; } = new(
+            new BaselinePreparationState(
+                EvaluationDate, BaselineDate, true, true, true,
+                BaselinePreparationStatus.Ready, null, null, 2, 2),
+            PreparedThisRun: true,
+            IsAnotherPreparationRunning: false,
+            "基準資料已準備完成。");
+
+        public Task<BaselinePreparationState> GetStateAsync(DateOnly evaluationDate, DateOnly? baselineTradeDate, CancellationToken cancellationToken)
+            => Task.FromResult(new BaselinePreparationState(
+                evaluationDate, baselineTradeDate, baselineTradeDate is not null,
+                true, true, BaselinePreparationStatus.Ready, null, null, 2, 2));
+
+        public Task<BaselinePreparationResult> EnsureBaselineDataAsync(
+            DateOnly evaluationDate,
+            IntradayBaselineResolution initialResolution,
+            OfficialMarketDataSettings settings,
+            CancellationToken cancellationToken)
+        {
+            EnsureCallCount++;
+            return Task.FromResult(Result);
+        }
     }
 
     /// <summary>盤中 Tick 只允許讀取客戶持股；WriteStrategyResultsAsync 被呼叫就直接失敗。</summary>
@@ -349,6 +512,7 @@ public sealed class IntradayMonitoringServiceTests
             AppSettings settings, DateOnly targetDate, CancellationToken cancellationToken, Action<string>? reportProgress = null)
         {
             ReadCallCount++;
+            reportProgress?.Invoke("正在掃描 Excel 客戶頁籤。");
             if (ThrowOnRead is not null)
             {
                 throw ThrowOnRead;

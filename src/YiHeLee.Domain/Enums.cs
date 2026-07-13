@@ -150,6 +150,21 @@ public enum IntradayRunStatus
 }
 
 /// <summary>
+/// 盤中上一交易日基準資料準備狀態。狀態由 SQLite 既有 StockDailyPrice／StockMovingAverage／OfficialPriceBatch
+/// 推導，或由本次準備流程的短暫步驟回報；不得只靠記憶體 bool 判斷基準是否完成。
+/// </summary>
+public enum BaselinePreparationStatus
+{
+    Unknown = 0,
+    ResolvingCalendar = 1,
+    Backfilling = 2,
+    CalculatingMovingAverage = 3,
+    Ready = 4,
+    Failed = 5,
+    Partial = 6
+}
+
+/// <summary>
 /// 市場工作流程目前時段狀態（2026-07-13 盤中／收盤流程拆分新增），供主視窗與系統匣顯示。
 /// </summary>
 public enum MarketWorkflowPhase

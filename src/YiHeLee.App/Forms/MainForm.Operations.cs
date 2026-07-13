@@ -261,6 +261,10 @@ internal sealed partial class MainForm
     private async void OnRunIntradayClick(object? sender, EventArgs e)
     {
         SetRunButtonsEnabled(false);
+        // 按下執行立即帶出進度條；後續由盤中服務逐步回報「正在執行什麼」。
+        _statusProgressBar.Value = 1;
+        _statusProgressBar.Visible = true;
+        _statusLabel.Text = "狀態：盤中判斷：開始執行";
         try
         {
             await _runIntradayAction();

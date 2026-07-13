@@ -34,7 +34,7 @@ public sealed class TradingDateResolver : ITradingDateResolver
             return new IntradayBaselineResolution(
                 evaluationDate, null, false,
                 $"資料庫尚無 {evaluationDate:yyyy-MM-dd} 之前的官方收盤價資料，無法解析上一交易日。請先執行收盤更新或歷史回補。",
-                null, latestMovingAverageDate);
+                null, latestMovingAverageDate, null);
         }
 
         var latestAttemptDate = await _marketDataRepository
@@ -47,7 +47,7 @@ public sealed class TradingDateResolver : ITradingDateResolver
                 evaluationDate, null, false,
                 $"上一交易日 {attempt:yyyy-MM-dd} 的收盤更新尚未成功（官方收盤價未保存），" +
                 $"禁止退回 {latestPriceDate.Value:yyyy-MM-dd} 的舊均價冒充上一交易日。請先執行收盤更新或歷史回補。",
-                latestPriceDate, latestMovingAverageDate);
+                latestPriceDate, latestMovingAverageDate, attempt);
         }
 
         if (latestMovingAverageDate is null || latestMovingAverageDate.Value != latestPriceDate.Value)
@@ -57,11 +57,11 @@ public sealed class TradingDateResolver : ITradingDateResolver
                 $"上一交易日 {latestPriceDate.Value:yyyy-MM-dd} 的均價快照不存在或不完整" +
                 $"（均價快照最新日期：{(latestMovingAverageDate is DateOnly ma ? ma.ToString("yyyy-MM-dd") : "無")}），" +
                 "禁止退回更舊的均價快照。請先執行收盤更新或歷史回補。",
-                latestPriceDate, latestMovingAverageDate);
+                latestPriceDate, latestMovingAverageDate, latestPriceDate.Value);
         }
 
         return new IntradayBaselineResolution(
-            evaluationDate, latestPriceDate.Value, true, null, latestPriceDate, latestMovingAverageDate);
+            evaluationDate, latestPriceDate.Value, true, null, latestPriceDate, latestMovingAverageDate, latestPriceDate.Value);
     }
 
     public async Task<bool> IsKnownNonTradingDayAsync(DateOnly date, CancellationToken cancellationToken)

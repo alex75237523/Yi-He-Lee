@@ -49,12 +49,13 @@
 - 程式常駐 Windows 右下角系統匣，可立即執行、開啟設定、開啟 Excel、查看 Log、選擇以系統管理員重新啟動。
 - 可設定 N 個網址；不同網站應新增獨立 `ISourceCrawler`，不可把不同網頁解析規則混在同一 Provider。非必要來源若任一市場失敗，該來源整批不寫入，不影響兩個固定必要來源的成功判定。
 - **歷史收盤價查詢與手動回補（2026-07-09 新增）**：系統匣選單「歷史收盤價」可查詢分頁歷史收盤價（含 MA5／MA20／MA60／MA120，資料不足顯示文字而非0），並可手動「立即回補」最近 N 個有效交易日（預設5日，可調整），以市場＋交易日期為工作單位有限並行抓取（預設4、上限8），即時顯示整體與工作明細進度，可取消，重新整理仍可回復進度；另提供與鉅亨網多頭／空頭清單交叉驗證。詳見 `docs/02_架構與資料流程.md`、`docs/03_資料庫結構.md`。
+- **盤中基準自動準備與快速路徑（2026-07-13 新增）**：盤中判斷會先解析 `evaluationDate` 的上一交易日基準；若該基準日官方收盤價或 MA5／MA20／MA60／MA120 缺漏，會在同一次呼叫內自動補齊、重算、重新驗證基準，成功後立即讀取 Excel 最新價格並判斷，不要求使用者再按第二次。基準完成後的後續手動執行、下一個 30 秒 Tick、程式重啟後下一輪，都會直接從 SQLite 推導 Ready 並沿用已保存均價，只重新讀取客戶價格，不重複回補或重算同日均價。
 
 ## 技術架構
 
 ```text
 YiHeLee.App             WinForms、NotifyIcon、中央結果視窗、設定畫面、歷史收盤價查詢／回補進度畫面
-YiHeLee.Application     排程流程、驗證、均線策略、官方價格協調（MarketPriceService）、歷史回補並行協調（StockHistoryImportService）、鉅亨交叉驗證、介面
+YiHeLee.Application     排程流程、盤中基準準備、驗證、均線策略、官方價格協調（MarketPriceService）、歷史回補並行協調（StockHistoryImportService）、鉅亨交叉驗證、介面
 YiHeLee.Infrastructure  Playwright 爬蟲、TWSE／TPEx HTTP Provider、Excel Interop、SQLite、Log、設定檔
 YiHeLee.Domain          Entity、Enum、設定模型
 tests/YiHeLee.Tests     策略、排除規則、設定、鉅亨表格 Parser、TWSE／TPEx Parser、均線計算、官方價格服務、歷史回補並行／進度、歷史收盤價查詢、鉅亨交叉驗證、SQLite 測試

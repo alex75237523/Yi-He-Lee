@@ -8,8 +8,9 @@ namespace YiHeLee.Application.Services;
 /// 只負責：解析上一交易日基準、讀取已保存於 SQLite 的上一交易日均價、讀取 Excel 客戶持股
 /// 與最新 DDE 現價（唯讀，不備份、不儲存、不覆寫活頁簿）、呼叫既有
 /// <see cref="StrategyEvaluationService"/>、以 IntradayAlertState 去重通知、保存盤中執行摘要。
-/// 禁止包含：官方收盤行情擷取、鉅亨擷取、歷史回補、均價計算、Excel「每日五日均價策略」頁籤寫入；
-/// 因此本類別刻意不依賴 IMarketPriceService、IMovingAverageService、ICrawlerRegistry 與 DailyMarketDataJob。
+/// 基準缺漏時會透過 <see cref="IBaselinePreparationService"/> 補齊上一交易日官方收盤價並重算均價；
+/// 準備成功後必須在同一次呼叫內繼續讀取 Excel 並判斷。
+/// 禁止包含：鉅亨擷取、Excel「每日五日均價策略」頁籤寫入；
 /// 當天收盤後產生的新均價不得在同一天盤中使用：基準一律由 <see cref="ITradingDateResolver"/> 解析為
 /// 嚴格早於 EvaluationDate 的上一交易日。
 /// </summary>
@@ -24,6 +25,8 @@ public sealed class IntradayMonitoringService
     private readonly StrategyEvaluationService _strategyEvaluationService;
     private readonly IIntradayStateRepository _intradayStateRepository;
     private readonly IWorkflowExecutionGate _executionGate;
+    private readonly IBaselinePreparationService? _baselinePreparationService;
+    private readonly IUserInteraction? _userInteraction;
     private readonly IAppLogger _logger;
 
     /// <summary>每次盤中判斷完成（含略過、失敗、基準未就緒）後觸發，供中央結果畫面與系統匣更新。</summary>
@@ -39,7 +42,9 @@ public sealed class IntradayMonitoringService
         StrategyEvaluationService strategyEvaluationService,
         IIntradayStateRepository intradayStateRepository,
         IWorkflowExecutionGate executionGate,
-        IAppLogger logger)
+        IAppLogger logger,
+        IBaselinePreparationService? baselinePreparationService = null,
+        IUserInteraction? userInteraction = null)
     {
         _clock = clock;
         _settingsStore = settingsStore;
@@ -51,6 +56,8 @@ public sealed class IntradayMonitoringService
         _intradayStateRepository = intradayStateRepository;
         _executionGate = executionGate;
         _logger = logger;
+        _baselinePreparationService = baselinePreparationService;
+        _userInteraction = userInteraction;
     }
 
     /// <summary>
@@ -62,15 +69,16 @@ public sealed class IntradayMonitoringService
     {
         var evaluationDate = _clock.GetTaipeiToday();
 
-        var ticket = _executionGate.TryEnter("盤中判斷");
+        var ticket = _executionGate.TryEnter("盤中監控：正在準備上一交易日資料或判斷");
         if (ticket is null)
         {
             var owner = _executionGate.CurrentOwner ?? "另一項工作";
             var skipped = CreateSummary(
                 evaluationDate, null, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.Skipped,
-                $"本次盤中判斷已略過：{owner}尚未完成，依規定不排隊、不同時執行。", 0, 0, 0, 0, 0, 0, [], []);
+                $"本次盤中判斷已略過：{owner}尚未完成，依規定不排隊、不同時執行。", isManualRun, 0, 0, 0, 0, 0, 0, [], []);
             await SaveRunAsync(skipped, startedAt: null, skippedReason: skipped.Message, errorMessage: null, cancellationToken).ConfigureAwait(false);
             _logger.Info(skipped.Message);
+            PublishFinalStatus(skipped);
             RunCompleted?.Invoke(skipped);
             return skipped;
         }
@@ -81,7 +89,8 @@ public sealed class IntradayMonitoringService
             IntradayRunSummary summary;
             try
             {
-                summary = await RunCoreAsync(evaluationDate, scheduledAt, startedAt, cancellationToken).ConfigureAwait(false);
+                ShowStatus("盤中判斷：開始執行", 5);
+                summary = await RunCoreAsync(isManualRun, evaluationDate, scheduledAt, startedAt, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -93,65 +102,122 @@ public sealed class IntradayMonitoringService
                 // 不影響下一分鐘，也絕不因此啟動官方資料抓取或使用前一次現價。
                 summary = CreateSummary(
                     evaluationDate, null, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.Failed,
-                    $"盤中判斷失敗（EvaluationDate={evaluationDate:yyyy-MM-dd}）：{ex.Message}", 0, 0, 0, 0, 0, 0, [], []);
+                    $"盤中判斷失敗（EvaluationDate={evaluationDate:yyyy-MM-dd}）：{ex.Message}", isManualRun, 0, 0, 0, 0, 0, 0, [], []);
                 await SaveRunAsync(summary, startedAt, skippedReason: null, errorMessage: ex.Message, cancellationToken).ConfigureAwait(false);
                 _logger.Error(summary.Message, ex);
             }
 
+            PublishFinalStatus(summary);
             RunCompleted?.Invoke(summary);
             return summary;
         }
     }
 
     private async Task<IntradayRunSummary> RunCoreAsync(
+        bool isManualRun,
         DateOnly evaluationDate,
         DateTimeOffset scheduledAt,
         DateTimeOffset startedAt,
         CancellationToken cancellationToken)
     {
         var settings = await _settingsStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+        ShowStatus("盤中判斷：讀取設定", 8);
         if (string.IsNullOrWhiteSpace(settings.WorkbookPath))
         {
             var invalid = CreateSummary(
                 evaluationDate, null, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.Failed,
-                "尚未設定 Excel 活頁簿路徑，無法執行盤中判斷。", 0, 0, 0, 0, 0, 0, [], []);
+                "尚未設定 Excel 活頁簿路徑，無法執行盤中判斷。", isManualRun, 0, 0, 0, 0, 0, 0, [], []);
             await SaveRunAsync(invalid, startedAt, null, invalid.Message, cancellationToken).ConfigureAwait(false);
             _logger.Warning(invalid.Message);
             return invalid;
         }
 
-        // 步驟一：解析上一交易日基準。禁止 today-1；快照不完整時不判斷、不通知、不退回舊資料。
+        // 步驟一：解析上一交易日基準。禁止 today-1；快照不完整時先嘗試自動準備，成功後同次繼續判斷。
+        ShowStatus("盤中判斷：解析上一交易日均價基準", 12);
         var baseline = await _tradingDateResolver.ResolveBaselineAsync(evaluationDate, cancellationToken).ConfigureAwait(false);
         if (!baseline.IsReady || baseline.BaselineTradeDate is not DateOnly baselineTradeDate)
         {
-            var notReady = CreateSummary(
-                evaluationDate, null, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.BaselineNotReady,
-                $"基準均價資料尚未就緒（EvaluationDate={evaluationDate:yyyy-MM-dd}）：{baseline.NotReadyReason}",
-                0, 0, 0, 0, 0, 0, [], []);
-            await SaveRunAsync(notReady, startedAt, null, baseline.NotReadyReason, cancellationToken).ConfigureAwait(false);
-            _logger.Warning(notReady.Message);
-            return notReady;
+            if (_baselinePreparationService is null)
+            {
+                var notReady = CreateSummary(
+                    evaluationDate, null, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.BaselineNotReady,
+                    $"基準均價資料尚未就緒（EvaluationDate={evaluationDate:yyyy-MM-dd}）：{baseline.NotReadyReason}",
+                    isManualRun, 0, 0, 0, 0, 0, 0, [], []);
+                await SaveRunAsync(notReady, startedAt, null, baseline.NotReadyReason, cancellationToken).ConfigureAwait(false);
+                _logger.Warning(notReady.Message);
+                return notReady;
+            }
+
+            var preparation = await _baselinePreparationService
+                .EnsureBaselineDataAsync(evaluationDate, baseline, settings.OfficialMarketData, cancellationToken).ConfigureAwait(false);
+            if (preparation.IsAnotherPreparationRunning || preparation.State.Status is BaselinePreparationStatus.Failed or BaselinePreparationStatus.Partial)
+            {
+                var waiting = CreateSummary(
+                    evaluationDate, preparation.State.BaselineTradeDate, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.BaselineNotReady,
+                    preparation.Message,
+                    isManualRun, 0, 0, 0, 0, 0, 0, [], []);
+                await SaveRunAsync(waiting, startedAt, null, preparation.Message, cancellationToken).ConfigureAwait(false);
+                _logger.Warning(waiting.Message);
+                return waiting;
+            }
+
+            // 關鍵：回補／均價計算後重新呼叫 TradingDateResolver 驗證基準，驗證成功後不得直接結束。
+            baseline = await _tradingDateResolver.ResolveBaselineAsync(evaluationDate, cancellationToken).ConfigureAwait(false);
+            if (!baseline.IsReady || baseline.BaselineTradeDate is not DateOnly resolvedBaselineTradeDate)
+            {
+                var notReadyAfterPreparation = CreateSummary(
+                    evaluationDate, preparation.State.BaselineTradeDate, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.BaselineNotReady,
+                    $"基準資料準備後仍未就緒（EvaluationDate={evaluationDate:yyyy-MM-dd}）：{baseline.NotReadyReason ?? preparation.Message}",
+                    isManualRun, 0, 0, 0, 0, 0, 0, [], []);
+                await SaveRunAsync(notReadyAfterPreparation, startedAt, null, notReadyAfterPreparation.Message, cancellationToken).ConfigureAwait(false);
+                _logger.Warning(notReadyAfterPreparation.Message);
+                return notReadyAfterPreparation;
+            }
+
+            baselineTradeDate = resolvedBaselineTradeDate;
         }
 
         // 步驟二：讀取上一交易日已保存於 SQLite 的均價快照（只讀完整提交的資料，不重新計算）。
+        ShowStatus($"盤中判斷：讀取 {baselineTradeDate:yyyy-MM-dd} 已保存均價", 45);
         var movingAverages = await _marketDataRepository
             .GetMovingAverageResultsAsync(baselineTradeDate, cancellationToken).ConfigureAwait(false);
         if (movingAverages.Count == 0)
         {
-            var emptySnapshot = CreateSummary(
-                evaluationDate, baselineTradeDate, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.BaselineNotReady,
-                $"基準均價資料尚未就緒：上一交易日 {baselineTradeDate:yyyy-MM-dd} 的均價快照沒有任何資料列。請先執行收盤更新或歷史回補。",
-                0, 0, 0, 0, 0, 0, [], []);
-            await SaveRunAsync(emptySnapshot, startedAt, null, emptySnapshot.Message, cancellationToken).ConfigureAwait(false);
-            _logger.Warning(emptySnapshot.Message);
-            return emptySnapshot;
+            if (_baselinePreparationService is not null)
+            {
+                var preparation = await _baselinePreparationService
+                    .EnsureBaselineDataAsync(evaluationDate, baseline, settings.OfficialMarketData, cancellationToken).ConfigureAwait(false);
+                if (!preparation.IsAnotherPreparationRunning && preparation.State.Status == BaselinePreparationStatus.Ready)
+                {
+                    baseline = await _tradingDateResolver.ResolveBaselineAsync(evaluationDate, cancellationToken).ConfigureAwait(false);
+                    if (baseline.IsReady && baseline.BaselineTradeDate is DateOnly resolved)
+                    {
+                        baselineTradeDate = resolved;
+                        movingAverages = await _marketDataRepository
+                            .GetMovingAverageResultsAsync(baselineTradeDate, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
+
+            if (movingAverages.Count == 0)
+            {
+                var emptySnapshot = CreateSummary(
+                    evaluationDate, baselineTradeDate, scheduledAt, _clock.GetTaipeiNow(), IntradayRunStatus.BaselineNotReady,
+                    $"基準均價資料尚未就緒：上一交易日 {baselineTradeDate:yyyy-MM-dd} 的均價快照沒有任何資料列。",
+                    isManualRun, 0, 0, 0, 0, 0, 0, [], []);
+                await SaveRunAsync(emptySnapshot, startedAt, null, emptySnapshot.Message, cancellationToken).ConfigureAwait(false);
+                _logger.Warning(emptySnapshot.Message);
+                return emptySnapshot;
+            }
         }
 
         // 步驟三：讀取 Excel 客戶持股與最新 DDE 現價（唯讀；單一儲存格 DDE 異常只影響該持股）。
+        ShowStatus("盤中判斷：讀取 Excel 客戶持股與最新現價", 60);
         var holdings = await _excelWorkbookService
-            .ReadHoldingsAsync(settings, evaluationDate, cancellationToken).ConfigureAwait(false);
+            .ReadHoldingsAsync(settings, evaluationDate, cancellationToken, detail => ShowProgressDetail(detail)).ConfigureAwait(false);
 
         // 步驟四：股票代碼正規化與身分解析（重用既有服務，只查 DB 主檔，不觸發任何官方來源）。
+        ShowStatus("盤中判斷：正規化股票代碼與市場別", 72);
         var rawHoldingCodes = holdings.Select(x => x.StockCode).ToArray();
         var resolutions = await _stockIdentityResolutionService.ResolveAsync(rawHoldingCodes, cancellationToken).ConfigureAwait(false);
         var holdingStockCodes = resolutions.Values
@@ -164,11 +230,13 @@ public sealed class IntradayMonitoringService
         // 步驟五：呼叫既有策略判斷（比較公式不屬於本流程拆分，維持原樣）。
         // StrategyAlert.TradeDate 保存 EvaluationDate（盤中判斷日）；均價本身來自 baselineTradeDate 的快照，
         // 兩個日期在通知文字、Log 與 IntradayEvaluationRun 中分開呈現。
+        ShowStatus("盤中判斷：比對均價條件與價格異常", 82);
         var evaluatedAt = _clock.GetTaipeiNow();
         var alerts = _strategyEvaluationService.Evaluate(
             evaluationDate, holdings, movingAverages, marketTypes, evaluatedAt, resolutions);
 
         // 步驟六：通知去重。從 SQLite 恢復既有狀態（含程式重啟情境），只對「不成立→成立」的新觸發通知。
+        ShowStatus("盤中判斷：更新通知去重狀態", 92);
         var previousStates = await _intradayStateRepository
             .GetAlertStatesAsync(evaluationDate, settings.WorkbookPath, cancellationToken).ConfigureAwait(false);
         var (statesToPersist, newlyTriggeredKeys) = ApplyNotificationDeduplication(
@@ -187,15 +255,22 @@ public sealed class IntradayMonitoringService
             ? IntradayRunStatus.PartialSuccess
             : IntradayRunStatus.Succeeded;
 
+        var baselineState = _baselinePreparationService is null
+            ? null
+            : await _baselinePreparationService.GetStateAsync(evaluationDate, baselineTradeDate, cancellationToken).ConfigureAwait(false);
+        var baselineText = baselineState?.Status == BaselinePreparationStatus.Ready
+            ? $"基準資料：沿用 {baselineTradeDate:yyyy-MM-dd} 已完成均價，本輪只重新讀取客戶價格。"
+            : "基準資料：已就緒。";
+
         var message =
             $"盤中判斷完成：EvaluationDate={evaluationDate:yyyy-MM-dd}、BaselineTradeDate={baselineTradeDate:yyyy-MM-dd}、" +
             $"EvaluatedAt={evaluatedAt:yyyy-MM-dd HH:mm:ss zzz}。持股 {holdings.Count} 筆、目前成立 {triggeredCount} 筆、" +
             $"新通知 {newlyTriggeredAlerts.Length} 筆、進場價/平均價異常 {entryInvalidCount} 筆、現價 DDE 異常 {currentInvalidCount} 筆、" +
-            $"缺基準均價 {missingCount} 筆。均價基準為上一交易日已保存快照，盤中不抓官方資料、不算均線、不寫 Excel。";
+            $"缺基準均價 {missingCount} 筆。{baselineText}";
 
         var summary = CreateSummary(
             evaluationDate, baselineTradeDate, scheduledAt, evaluatedAt, status, message,
-            holdings.Count, triggeredCount, newlyTriggeredAlerts.Length,
+            isManualRun, holdings.Count, triggeredCount, newlyTriggeredAlerts.Length,
             entryInvalidCount, currentInvalidCount, missingCount, alerts, newlyTriggeredAlerts);
         await SaveRunAsync(summary, startedAt, null, null, cancellationToken).ConfigureAwait(false);
         _logger.Info(summary.Message);
@@ -352,6 +427,7 @@ public sealed class IntradayMonitoringService
         DateTimeOffset evaluatedAt,
         IntradayRunStatus status,
         string message,
+        bool isManualRun,
         int holdingCount,
         int activeTriggerCount,
         int newNotificationCount,
@@ -361,8 +437,21 @@ public sealed class IntradayMonitoringService
         IReadOnlyList<StrategyAlert> alerts,
         IReadOnlyList<StrategyAlert> newlyTriggeredAlerts)
         => new(
-            evaluationDate, baselineTradeDate, scheduledAt, evaluatedAt, status, message,
+            evaluationDate, baselineTradeDate, scheduledAt, evaluatedAt, isManualRun, status, message,
             holdingCount, activeTriggerCount, newNotificationCount,
             entryAveragePriceInvalidCount, currentPriceInvalidCount, missingMovingAverageCount,
             alerts, newlyTriggeredAlerts);
+
+    private void ShowStatus(string message, int percentComplete)
+        => _userInteraction?.ShowStatus(message, percentComplete);
+
+    private void ShowProgressDetail(string message)
+        => _userInteraction?.ShowProgressDetail(message);
+
+    private void PublishFinalStatus(IntradayRunSummary summary)
+    {
+        ShowProgressDetail(string.Empty);
+        var percent = summary.Status is IntradayRunStatus.Succeeded or IntradayRunStatus.PartialSuccess ? 100 : 0;
+        ShowStatus(summary.Message, percent);
+    }
 }

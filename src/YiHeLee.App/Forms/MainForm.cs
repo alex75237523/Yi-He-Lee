@@ -114,6 +114,8 @@ internal sealed partial class MainForm : Form
 
     public void ShowSettingsTab() => _tabs.SelectedTab = _settingsTab;
 
+    public bool IsResultsTabVisible => Visible && _tabs.SelectedTab == _resultsTab;
+
     public void ApplyAppIcon(AppSettings settings)
     {
         var oldIcon = Icon;

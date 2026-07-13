@@ -398,7 +398,35 @@ public sealed record IntradayBaselineResolution(
     bool IsReady,
     string? NotReadyReason,
     DateOnly? LatestPriceTradeDate,
-    DateOnly? LatestMovingAverageTradeDate);
+    DateOnly? LatestMovingAverageTradeDate,
+    DateOnly? ExpectedBaselineTradeDate = null);
+
+/// <summary>
+/// 盤中基準資料準備狀態。這是由既有 SQLite 資料推導出的狀態快照，不要求新增資料表：
+/// <see cref="OfficialPriceReady"/> 代表基準日已有官方收盤價；<see cref="MovingAverageReady"/> 代表
+/// 同一批股票皆已有完整 MA5／MA20／MA60／MA120 快照。
+/// </summary>
+public sealed record BaselinePreparationState(
+    DateOnly EvaluationDate,
+    DateOnly? BaselineTradeDate,
+    bool CalendarResolved,
+    bool OfficialPriceReady,
+    bool MovingAverageReady,
+    BaselinePreparationStatus Status,
+    DateTimeOffset? CompletedAt,
+    string? LastError,
+    int OfficialPriceStockCount,
+    int MovingAverageStockCount);
+
+/// <summary>
+/// 單次 EnsureBaselineDataAsync 的結果；<see cref="PreparedThisRun"/> 為 true 時代表本次呼叫內曾補資料或重算均價，
+/// 呼叫端必須在同一次盤中判斷中重新解析基準並繼續讀取 Excel，不得要求使用者再按第二次。
+/// </summary>
+public sealed record BaselinePreparationResult(
+    BaselinePreparationState State,
+    bool PreparedThisRun,
+    bool IsAnotherPreparationRunning,
+    string Message);
 
 /// <summary>
 /// 盤中通知去重狀態（IntradayAlertState 資料表，2026-07-13 新增）。
@@ -456,6 +484,7 @@ public sealed record IntradayRunSummary(
     DateOnly? BaselineTradeDate,
     DateTimeOffset ScheduledAt,
     DateTimeOffset EvaluatedAt,
+    bool IsManualRun,
     IntradayRunStatus Status,
     string Message,
     int HoldingCount,

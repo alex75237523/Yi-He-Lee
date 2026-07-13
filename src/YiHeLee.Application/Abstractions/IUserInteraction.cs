@@ -7,8 +7,7 @@ public interface IUserInteraction
 {
     Task<bool> ConfirmExcelSafetyAsync(CancellationToken cancellationToken);
 
-    /// <summary>回報目前狀態。percentComplete 為 0～100 的整體執行進度，畫面預設只呈現進度條，
-    /// 不直接顯示 message 內容，避免讓使用者得知背後實際執行到哪個步驟。</summary>
+    /// <summary>回報目前狀態。percentComplete 為 0～100 的整體執行進度，畫面以文字與進度條讓使用者知道目前步驟。</summary>
     void ShowStatus(string message, int percentComplete = 0);
 
     /// <summary>回報長時間作業的細節進度（例如 MA120 歷史回補的逐日抓取進度），

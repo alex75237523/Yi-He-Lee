@@ -118,6 +118,33 @@ public interface IMarketDataRepository
     Task<DateOnly?> GetLatestTradeDateAsync(CancellationToken cancellationToken);
 
     /// <summary>
+    /// 取得指定日期（不含）之前，StockDailyPrice 已保存官方收盤價的最新交易日期。
+    /// 供 TradingDateResolver 解析「真正的上一交易日」，禁止以 today-1 推算（2026-07-13 新增）。
+    /// </summary>
+    Task<DateOnly?> GetLatestPriceTradeDateBeforeAsync(DateOnly beforeDate, CancellationToken cancellationToken)
+        => Task.FromResult<DateOnly?>(null);
+
+    /// <summary>
+    /// 取得指定日期（不含）之前，StockMovingAverage 已保存均線快照的最新交易日期。
+    /// 與 <see cref="GetLatestPriceTradeDateBeforeAsync"/> 不一致時代表上一交易日均價快照不完整，
+    /// 盤中判斷必須標記「基準均價資料尚未就緒」，禁止退回更舊快照（2026-07-13 新增）。
+    /// </summary>
+    Task<DateOnly?> GetLatestMovingAverageTradeDateBeforeAsync(DateOnly beforeDate, CancellationToken cancellationToken)
+        => Task.FromResult<DateOnly?>(null);
+
+    /// <summary>
+    /// 取得指定日期（不含）之前，每日排程（JobType=DailyMarketData）曾嘗試收盤更新（狀態非 Holiday）
+    /// 的最新目標日期。若晚於已保存收盤價的最新日期，代表上一交易日收盤更新未成功，
+    /// 基準不得使用更舊資料冒充（2026-07-13 新增）。
+    /// </summary>
+    Task<DateOnly?> GetLatestDailyCloseAttemptDateBeforeAsync(DateOnly beforeDate, CancellationToken cancellationToken)
+        => Task.FromResult<DateOnly?>(null);
+
+    /// <summary>指定日期是否已有官方批次明確記錄為休市（任一來源 Status=Holiday）；供非交易日判定（2026-07-13 新增）。</summary>
+    Task<bool> HasHolidayBatchAsync(DateOnly targetDate, CancellationToken cancellationToken)
+        => Task.FromResult(false);
+
+    /// <summary>
     /// 篩選出指定交易日中，哪些股票代碼「先前執行已查詢過興櫃歷史行情、確認查無資料」。
     /// 歷史資料一經確認即不會改變（例如該股票當時根本還沒開始興櫃交易），回補時應直接略過這些組合，
     /// 不需要對官方來源重複發送請求；只回傳確實已記錄過的代碼子集合，不在紀錄中的代碼一律視為尚待查詢。

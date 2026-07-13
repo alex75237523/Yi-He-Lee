@@ -52,7 +52,6 @@ internal static class Program
         var emergingProvider = new EmergingMarketDataProvider(marketDataHttpClient, logger, clock);
         var marketPriceService = new MarketPriceService(twseProvider, tpexProvider, emergingProvider, marketDataRepository, clock, logger);
         var dailyMarketDataJob = new DailyMarketDataJob(marketPriceService);
-        var historicalBackfillJob = new HistoricalBackfillJob(marketPriceService);
         var movingAverageService = new MovingAverageService(marketDataRepository);
 
         // 歷史收盤價查詢畫面／立即回補：使用者手動觸發，市場＋交易日期為工作單位，
@@ -64,7 +63,14 @@ internal static class Program
 
         var strategyService = new StrategyEvaluationService();
         var stockIdentityResolutionService = new StockIdentityResolutionService(marketDataRepository);
-        var dailyJobService = new DailyJobService(
+
+        // 2026-07-13 盤中／收盤流程拆分：原 DailyJobService 拆成兩條完全獨立的流程。
+        // 盤中監控只用上一交易日已保存均價與 Excel 現價；收盤更新只做官方收盤價與均價前置，
+        // 兩者共用 WorkflowExecutionGate 互斥，Excel COM 不會同時由兩個流程操作。
+        var workflowExecutionGate = new WorkflowExecutionGate();
+        var tradingDateResolver = new TradingDateResolver(marketDataRepository);
+        var intradayStateRepository = new SqliteIntradayStateRepository(paths.DatabasePath, clock);
+        var closePrecomputeJobService = new ClosePrecomputeJobService(
             clock,
             settingsStore,
             crawlerRegistry,
@@ -74,14 +80,25 @@ internal static class Program
             userInteraction,
             logger,
             dailyMarketDataJob,
-            historicalBackfillJob,
             marketPriceService,
             movingAverageService,
-            strategyService,
             validationService,
-            stockIdentityResolutionService);
-        var scheduleCoordinator = new DailyScheduleCoordinator(
-            dailyJobService,
+            workflowExecutionGate);
+        var intradayMonitoringService = new IntradayMonitoringService(
+            clock,
+            settingsStore,
+            tradingDateResolver,
+            marketDataRepository,
+            excelService,
+            stockIdentityResolutionService,
+            strategyService,
+            intradayStateRepository,
+            workflowExecutionGate,
+            logger);
+        var scheduleCoordinator = new MarketWorkflowScheduleCoordinator(
+            intradayMonitoringService,
+            closePrecomputeJobService,
+            tradingDateResolver,
             clock,
             settingsStore,
             repository,
@@ -94,12 +111,15 @@ internal static class Program
             marketDataRepository.InitializeAsync().GetAwaiter().GetResult();
             stockPriceImportRepository.InitializeAsync().GetAwaiter().GetResult();
             stockPriceValidationRepository.InitializeAsync().GetAwaiter().GetResult();
+            intradayStateRepository.InitializeAsync().GetAwaiter().GetResult();
 
             using var context = new TrayApplicationContext(
                 args,
                 paths,
-                dailyJobService,
+                intradayMonitoringService,
+                closePrecomputeJobService,
                 scheduleCoordinator,
+                clock,
                 settingsStore,
                 validationService,
                 repository,

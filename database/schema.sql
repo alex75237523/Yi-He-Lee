@@ -311,6 +311,62 @@ CREATE TABLE IF NOT EXISTS StockPriceImportTask (
 );
 CREATE INDEX IF NOT EXISTS IX_StockPriceImportTask_Job_Status ON StockPriceImportTask(JobId, Status);
 
+-- =====================================================================
+-- 以下為盤中每分鐘判斷相關資料表（2026-07-13 盤中／收盤流程拆分新增）。
+-- 盤中：使用上一交易日已保存均價，每分鐘讀取客戶 Excel 價格並判斷；
+-- 收盤：抓取今日正式收盤價、換算今日均價、保存 SQLite 與 Excel；
+-- 今日收盤產生的均價，下一個交易日盤中才開始使用。
+-- 盤中執行紀錄使用獨立資料表，不寫入 JobRuns，避免兩種 Job 語意混淆。
+-- =====================================================================
+
+-- 盤中通知去重狀態：同一條件持續成立時只通知一次；成立→不成立記錄 ClearedAt；
+-- 之後再次成立可再次通知；程式重啟後由本表恢復狀態，不得重複通知。
+CREATE TABLE IF NOT EXISTS IntradayAlertState (
+    Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 流水號
+    EvaluationDate TEXT NOT NULL,                    -- 盤中判斷日期（今天）
+    BaselineTradeDate TEXT NOT NULL,                 -- 使用的上一交易日均價日期
+    WorkbookPath TEXT NOT NULL,                      -- Excel 完整路徑
+    SheetName TEXT NOT NULL,                         -- 客戶頁籤
+    ExcelRow INTEGER NOT NULL,                       -- Excel 原始列號
+    StockCode TEXT NOT NULL,                         -- 股票代碼
+    AlertKind INTEGER NOT NULL,                      -- 1均線觸發／2缺技術資料／3現價無效（DDE）／4進場價/平均價無效
+    MaWindow INTEGER NOT NULL,                       -- 均線天數（5／20／120；非均線類通知為 0）
+    IsActive INTEGER NOT NULL,                       -- 條件目前是否成立
+    FirstTriggeredAt TEXT NOT NULL,                  -- 本輪首次成立時間
+    LastEvaluatedAt TEXT NOT NULL,                   -- 最後一次判斷時間
+    LastNotifiedAt TEXT NULL,                        -- 最後一次實際通知時間
+    ClearedAt TEXT NULL,                             -- 條件由成立變不成立的時間
+    CreatedAt TEXT NOT NULL,                         -- 建立時間
+    UpdatedAt TEXT NOT NULL,                         -- 最後更新時間
+    CONSTRAINT UQ_IntradayAlertState UNIQUE
+        (EvaluationDate, WorkbookPath, SheetName, ExcelRow, StockCode, AlertKind, MaWindow)
+);
+CREATE INDEX IF NOT EXISTS IX_IntradayAlertState_Date_Workbook
+    ON IntradayAlertState(EvaluationDate, WorkbookPath);
+
+-- 盤中每分鐘執行紀錄：每分鐘只保存摘要，不保存整份持股快照。
+-- EvaluationDate（今天判斷日）與 BaselineTradeDate（上一交易日均價日）必須明確分開。
+CREATE TABLE IF NOT EXISTS IntradayEvaluationRun (
+    Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 執行 ID
+    EvaluationDate TEXT NOT NULL,                    -- 盤中判斷日期（今天）
+    BaselineTradeDate TEXT NULL,                     -- 使用的上一交易日均價日期（基準未就緒時為 NULL）
+    ScheduledAt TEXT NOT NULL,                       -- 本次 Tick 預定時間（對齊整分鐘；手動執行為觸發時間）
+    StartedAt TEXT NULL,                             -- 實際開始時間（被略過時為 NULL）
+    CompletedAt TEXT NULL,                           -- 完成時間
+    Status INTEGER NOT NULL,                         -- 1成功／2部分成功／3失敗／4略過／5基準未就緒
+    HoldingCount INTEGER NOT NULL DEFAULT 0,         -- 本次讀取持股數
+    TriggeredCount INTEGER NOT NULL DEFAULT 0,       -- 目前成立條件（觸發通知）筆數
+    NewNotificationCount INTEGER NOT NULL DEFAULT 0, -- 本次新通知筆數（去重後）
+    EntryAveragePriceInvalidCount INTEGER NOT NULL DEFAULT 0, -- 進場價/平均價異常筆數
+    CurrentPriceInvalidCount INTEGER NOT NULL DEFAULT 0,      -- 現價 DDE 異常筆數
+    MissingMovingAverageCount INTEGER NOT NULL DEFAULT 0,     -- 缺基準均價筆數
+    SkippedReason TEXT NULL,                         -- 略過原因（上一 Tick 未完成、收盤更新執行中等）
+    ErrorMessage TEXT NULL,                          -- 錯誤訊息
+    CreatedAt TEXT NOT NULL                          -- 建立時間
+);
+CREATE INDEX IF NOT EXISTS IX_IntradayEvaluationRun_Date
+    ON IntradayEvaluationRun(EvaluationDate, Id);
+
 -- 鉅亨網多頭／空頭排列與官方自算均線的交叉驗證紀錄；僅作驗證追查，不得覆蓋或取代官方資料。
 CREATE TABLE IF NOT EXISTS CnyesCrossValidation (
     Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,   -- 流水號

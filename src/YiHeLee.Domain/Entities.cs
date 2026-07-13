@@ -385,6 +385,107 @@ public sealed record StockCodeResolution(
     bool IsRecognized,
     string? UnrecognizedReason);
 
+/// <summary>
+/// 盤中判斷使用的「上一交易日均價基準」解析結果（2026-07-13 盤中／收盤流程拆分新增）。
+/// <see cref="BaselineTradeDate"/> 一律由已保存的官方收盤資料解析出「真正的上一交易日」，
+/// 禁止以 <c>today.AddDays(-1)</c> 推算；快照不存在、不完整或上一交易日收盤更新未成功時
+/// <see cref="IsReady"/> 為 false，並以 <see cref="NotReadyReason"/> 說明原因，
+/// 禁止自動退回更舊的均價資料冒充上一交易日。
+/// </summary>
+public sealed record IntradayBaselineResolution(
+    DateOnly EvaluationDate,
+    DateOnly? BaselineTradeDate,
+    bool IsReady,
+    string? NotReadyReason,
+    DateOnly? LatestPriceTradeDate,
+    DateOnly? LatestMovingAverageTradeDate);
+
+/// <summary>
+/// 盤中通知去重狀態（IntradayAlertState 資料表，2026-07-13 新增）。
+/// 同一條件持續成立時只在「由不成立變成立」時通知一次；成立→不成立記錄 <see cref="ClearedAt"/>；
+/// 之後再次成立可再次通知。程式重啟後由 SQLite 恢復狀態，不得對仍持續成立的條件重複通知。
+/// <see cref="MaWindow"/> 為 5／20／120（均線觸發），非均線類通知（價格異常、缺技術資料）為 0。
+/// </summary>
+public sealed record IntradayAlertStateRecord(
+    DateOnly EvaluationDate,
+    DateOnly BaselineTradeDate,
+    string WorkbookPath,
+    string SheetName,
+    int ExcelRow,
+    string StockCode,
+    AlertKind AlertKind,
+    int MaWindow,
+    bool IsActive,
+    DateTimeOffset FirstTriggeredAt,
+    DateTimeOffset LastEvaluatedAt,
+    DateTimeOffset? LastNotifiedAt,
+    DateTimeOffset? ClearedAt);
+
+/// <summary>
+/// 盤中每分鐘執行紀錄（IntradayEvaluationRun 資料表，2026-07-13 新增）。
+/// 每分鐘只保存摘要，不重複保存整份持股快照；與收盤更新的 JobRuns 完全分開，語意不得混用。
+/// <see cref="EvaluationDate"/> 為今天盤中判斷日期，<see cref="BaselineTradeDate"/> 為使用的上一交易日均價日期，
+/// 兩者必須明確分開，禁止只用一個日期同時代表兩種語意。
+/// </summary>
+public sealed record IntradayEvaluationRunRecord(
+    long Id,
+    DateOnly EvaluationDate,
+    DateOnly? BaselineTradeDate,
+    DateTimeOffset ScheduledAt,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? CompletedAt,
+    IntradayRunStatus Status,
+    int HoldingCount,
+    int TriggeredCount,
+    int NewNotificationCount,
+    int EntryAveragePriceInvalidCount,
+    int CurrentPriceInvalidCount,
+    int MissingMovingAverageCount,
+    string? SkippedReason,
+    string? ErrorMessage);
+
+/// <summary>
+/// 盤中單次判斷的彙整結果，供中央結果畫面、系統匣與 Log 顯示。
+/// 通知、Log 與畫面都必須能同時看到 <see cref="EvaluationDate"/>（今天判斷的是哪一天）
+/// 與 <see cref="BaselineTradeDate"/>（使用哪一個交易日的均價）。
+/// <see cref="NewlyTriggeredAlerts"/> 只包含本次由「不成立變成立」的新通知（去重後），
+/// <see cref="Alerts"/> 為本次判斷的完整清單（含持續成立與異常）。
+/// </summary>
+public sealed record IntradayRunSummary(
+    DateOnly EvaluationDate,
+    DateOnly? BaselineTradeDate,
+    DateTimeOffset ScheduledAt,
+    DateTimeOffset EvaluatedAt,
+    IntradayRunStatus Status,
+    string Message,
+    int HoldingCount,
+    int ActiveTriggerCount,
+    int NewNotificationCount,
+    int EntryAveragePriceInvalidCount,
+    int CurrentPriceInvalidCount,
+    int MissingMovingAverageCount,
+    IReadOnlyList<StrategyAlert> Alerts,
+    IReadOnlyList<StrategyAlert> NewlyTriggeredAlerts);
+
+/// <summary>
+/// 市場工作流程目前狀態快照（2026-07-13 新增），供主視窗狀態列與系統匣文字顯示；
+/// 系統匣不得再只顯示「等待每日 13:35」，必須依時段顯示盤中監控／等待收盤／已完成／基準未就緒。
+/// </summary>
+public sealed record MarketWorkflowStatusSnapshot(
+    MarketWorkflowPhase Phase,
+    DateOnly EvaluationDate,
+    DateOnly? BaselineTradeDate,
+    DateTimeOffset? LastIntradayEvaluatedAt,
+    DateTimeOffset? NextIntradayTickAt,
+    DateOnly? LastCloseSucceededDate,
+    DateTimeOffset? NextCloseRunAt,
+    int HoldingCount,
+    int ActiveTriggerCount,
+    int NewNotificationCount,
+    int EntryAveragePriceInvalidCount,
+    int CurrentPriceInvalidCount,
+    string StatusText);
+
 public sealed record JobRunSummary(
     Guid JobId,
     DateOnly TargetDate,

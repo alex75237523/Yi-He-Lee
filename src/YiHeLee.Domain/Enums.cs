@@ -127,6 +127,55 @@ public enum StockPriceImportTaskStatus
     Cancelled = 7
 }
 
+/// <summary>
+/// 盤中每分鐘判斷單次執行狀態（2026-07-13 盤中／收盤流程拆分新增）。
+/// 盤中執行紀錄使用獨立的 IntradayEvaluationRun 資料表，與收盤更新的 JobRuns 語意分開，不得混用。
+/// </summary>
+public enum IntradayRunStatus
+{
+    /// <summary>本次盤中判斷完整成功。</summary>
+    Succeeded = 1,
+
+    /// <summary>本次盤中判斷完成，但有部分持股的進場價/平均價、現價（DDE）或基準均價無法判讀，僅影響該持股。</summary>
+    PartialSuccess = 2,
+
+    /// <summary>本次盤中判斷失敗（例如 Excel 活頁簿完全無法存取）；不影響下一分鐘，也不得啟動官方資料抓取。</summary>
+    Failed = 3,
+
+    /// <summary>本次 Tick 直接略過（上一次盤中判斷尚未完成或收盤更新執行中），不得排隊累積。</summary>
+    Skipped = 4,
+
+    /// <summary>上一交易日均價基準資料尚未就緒（快照不存在、不完整或收盤更新失敗），禁止退回更舊均價，本次不判斷。</summary>
+    BaselineNotReady = 5
+}
+
+/// <summary>
+/// 市場工作流程目前時段狀態（2026-07-13 盤中／收盤流程拆分新增），供主視窗與系統匣顯示。
+/// </summary>
+public enum MarketWorkflowPhase
+{
+    /// <summary>盤中監控執行中（09:00～13:30，每分鐘判斷一次）。</summary>
+    IntradayMonitoring = 1,
+
+    /// <summary>盤中監控已結束，等待 13:35 收盤更新。</summary>
+    WaitingForClose = 2,
+
+    /// <summary>今日收盤更新已完成。</summary>
+    CloseCompleted = 3,
+
+    /// <summary>基準均價資料未就緒，盤中監控暫停判斷。</summary>
+    BaselineNotReady = 4,
+
+    /// <summary>非交易日（週末或已確認休市），不啟動盤中監控。</summary>
+    NonTradingDay = 5,
+
+    /// <summary>非交易時段（開盤前）。</summary>
+    OutsideSchedule = 6,
+
+    /// <summary>排程已由使用者設定停用。</summary>
+    Disabled = 7
+}
+
 /// <summary>鉅亨網交叉驗證結果。股票未出現在多頭／空頭清單中時為 NotApplicable，不代表計算錯誤。</summary>
 public enum CnyesValidationOutcome
 {

@@ -9,7 +9,8 @@ internal sealed partial class MainForm : Form
 {
     private readonly SettingsValidationService _validationService;
     private readonly Func<AppSettings, Task> _onSaveSettings;
-    private readonly Func<DateOnly?, Task> _runNowAction;
+    private readonly Func<Task> _runIntradayAction;
+    private readonly Func<DateOnly?, Task> _runCloseAction;
     private readonly Func<Task> _openExcelAction;
     private readonly Action _historicalPriceAction;
     private readonly Action _openLogFolderAction;
@@ -25,14 +26,16 @@ internal sealed partial class MainForm : Form
         AppSettings initialSettings,
         SettingsValidationService validationService,
         Func<AppSettings, Task> onSaveSettings,
-        Func<DateOnly?, Task> runNowAction,
+        Func<Task> runIntradayAction,
+        Func<DateOnly?, Task> runCloseAction,
         Func<Task> openExcelAction,
         Action historicalPriceAction,
         Action openLogFolderAction)
     {
         _validationService = validationService;
         _onSaveSettings = onSaveSettings;
-        _runNowAction = runNowAction;
+        _runIntradayAction = runIntradayAction;
+        _runCloseAction = runCloseAction;
         _openExcelAction = openExcelAction;
         _historicalPriceAction = historicalPriceAction;
         _openLogFolderAction = openLogFolderAction;

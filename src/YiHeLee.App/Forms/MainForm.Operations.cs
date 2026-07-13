@@ -1,4 +1,5 @@
 using YiHeLee.App.Infrastructure;
+using YiHeLee.Domain;
 
 namespace YiHeLee.App.Forms;
 
@@ -8,10 +9,12 @@ internal sealed partial class MainForm
     private ProgressBar _statusProgressBar = null!;
     private Label _progressDetailLabel = null!;
     private Label _adminStatusLabel = null!;
-    private Button _runNowButton = null!;
+    private Button _runIntradayButton = null!;
+    private Button _runCloseButton = null!;
     private Button _historicalPriceButton = null!;
     private CheckBox _useManualRunDate = null!;
     private DateTimePicker _manualRunDate = null!;
+    private Label _workflowStatusValueLabel = null!;
 
     /// <summary>詳細文字狀態是否顯示，由 AppSettings.ShowStatusText 這個 config 旗標控制，預設隱藏。</summary>
     private bool _statusTextEnabled;
@@ -25,13 +28,14 @@ internal sealed partial class MainForm
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 6,
             Padding = new Padding(20, 16, 20, 12)
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // 執行區（日期＋按鈕）
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // 執行進度（執行中才顯示）
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // Excel 更新前確認（需要確認時才顯示）
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // 盤中監控／收盤更新狀態
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // 彈性空間
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // 權限狀態列（固定貼齊底部）
 
@@ -47,8 +51,9 @@ internal sealed partial class MainForm
         root.Controls.Add(BuildRunGroup(showHistoricalPriceButton), 0, 0);
         root.Controls.Add(BuildProgressPanel(), 0, 1);
         root.Controls.Add(_safetyPromptHost, 0, 2);
-        root.Controls.Add(new Panel { Dock = DockStyle.Fill, Margin = new Padding(0) }, 0, 3);
-        root.Controls.Add(BuildAdminStatusPanel(), 0, 4);
+        root.Controls.Add(BuildWorkflowStatusGroup(), 0, 3);
+        root.Controls.Add(new Panel { Dock = DockStyle.Fill, Margin = new Padding(0) }, 0, 4);
+        root.Controls.Add(BuildAdminStatusPanel(), 0, 5);
 
         tab.Controls.Add(root);
         return tab;
@@ -82,9 +87,10 @@ internal sealed partial class MainForm
             WrapContents = false,
             Margin = new Padding(0, 2, 0, 10)
         };
+        // 指定日期只適用於收盤更新（收盤／歷史資料流程）；盤中判斷一律使用今日與上一交易日基準。
         _useManualRunDate = new CheckBox
         {
-            Text = "指定日期（可回溯過去日期，未勾選則為今日）",
+            Text = "收盤更新指定日期（可回溯過去日期，未勾選則為今日；不適用盤中判斷）",
             AutoSize = true,
             Margin = new Padding(0, 3, 8, 0)
         };
@@ -109,8 +115,11 @@ internal sealed partial class MainForm
             WrapContents = true,
             Margin = new Padding(0)
         };
-        _runNowButton = CreateActionButton("立即執行", OnRunNowClick, primary: true);
-        buttons.Controls.Add(_runNowButton);
+        // 2026-07-13 盤中／收盤流程拆分：原「立即執行」語意不清楚，改為兩個明確操作。
+        _runIntradayButton = CreateActionButton("立即執行盤中判斷", OnRunIntradayClick, primary: true);
+        buttons.Controls.Add(_runIntradayButton);
+        _runCloseButton = CreateActionButton("立即執行收盤更新", OnRunCloseClick, primary: true);
+        buttons.Controls.Add(_runCloseButton);
         buttons.Controls.Add(CreateActionButton("開啟設定的 Excel", async (_, _) => await _openExcelAction()));
         _historicalPriceButton = CreateActionButton("歷史收盤價", (_, _) => _historicalPriceAction());
         _historicalPriceButton.Visible = showHistoricalPriceButton;
@@ -177,6 +186,30 @@ internal sealed partial class MainForm
         return panel;
     }
 
+    /// <summary>盤中監控／收盤更新狀態顯示（2026-07-13 盤中／收盤流程拆分新增）。</summary>
+    private Control BuildWorkflowStatusGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "盤中監控／收盤更新狀態",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(14, 6, 14, 10),
+            Margin = new Padding(0, 0, 0, 14)
+        };
+
+        _workflowStatusValueLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(900, 0),
+            Margin = new Padding(1, 4, 0, 4),
+            Text = "盤中監控：初始化中"
+        };
+        group.Controls.Add(_workflowStatusValueLabel);
+        return group;
+    }
+
     private Control BuildAdminStatusPanel()
     {
         var panel = new TableLayoutPanel
@@ -224,9 +257,27 @@ internal sealed partial class MainForm
         return button;
     }
 
-    private async void OnRunNowClick(object? sender, EventArgs e)
+    /// <summary>「立即執行盤中判斷」：只使用上一交易日已保存均價，不受指定日期影響。</summary>
+    private async void OnRunIntradayClick(object? sender, EventArgs e)
     {
-        _runNowButton.Enabled = false;
+        SetRunButtonsEnabled(false);
+        try
+        {
+            await _runIntradayAction();
+        }
+        finally
+        {
+            if (!IsDisposed)
+            {
+                SetRunButtonsEnabled(true);
+            }
+        }
+    }
+
+    /// <summary>「立即執行收盤更新」：官方收盤價與均價前置更新；指定過去日期仍屬收盤／歷史資料流程。</summary>
+    private async void OnRunCloseClick(object? sender, EventArgs e)
+    {
+        SetRunButtonsEnabled(false);
         // 按下執行立即帶出進度條，之後由 UpdateStatus 依實際進度更新並在結束時收起。
         _statusProgressBar.Value = 1;
         _statusProgressBar.Visible = true;
@@ -235,15 +286,21 @@ internal sealed partial class MainForm
             DateOnly? manualDate = _useManualRunDate.Checked
                 ? DateOnly.FromDateTime(_manualRunDate.Value.Date)
                 : null;
-            await _runNowAction(manualDate);
+            await _runCloseAction(manualDate);
         }
         finally
         {
             if (!IsDisposed)
             {
-                _runNowButton.Enabled = true;
+                SetRunButtonsEnabled(true);
             }
         }
+    }
+
+    private void SetRunButtonsEnabled(bool enabled)
+    {
+        _runIntradayButton.Enabled = enabled;
+        _runCloseButton.Enabled = enabled;
     }
 
     private void UpdateAdministratorStatus()
@@ -287,6 +344,49 @@ internal sealed partial class MainForm
         _progressDetailLabel.Text = message;
         _progressDetailLabel.Visible = !string.IsNullOrWhiteSpace(message);
     }
+
+    /// <summary>更新盤中監控／收盤更新狀態顯示（2026-07-13 新增）。畫面必須能看出
+    /// 今日判斷日期與使用的均價基準日期是兩個不同日期。</summary>
+    public void UpdateWorkflowStatus(MarketWorkflowStatusSnapshot snapshot)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        var monitorState = snapshot.Phase switch
+        {
+            MarketWorkflowPhase.IntradayMonitoring => "執行中",
+            MarketWorkflowPhase.BaselineNotReady => "基準資料未就緒",
+            MarketWorkflowPhase.NonTradingDay => "非交易時段（非交易日）",
+            MarketWorkflowPhase.WaitingForClose => "已停止（等待收盤更新）",
+            MarketWorkflowPhase.CloseCompleted => "已停止（今日收盤更新完成）",
+            MarketWorkflowPhase.OutsideSchedule => "非交易時段",
+            MarketWorkflowPhase.Disabled => "已停止（排程停用）",
+            _ => "未知"
+        };
+
+        var lines = new[]
+        {
+            $"盤中監控：{monitorState}",
+            $"今日判斷日期：{snapshot.EvaluationDate:yyyy-MM-dd}",
+            $"目前均價基準日期：{FormatDate(snapshot.BaselineTradeDate)}",
+            $"最後盤中判斷時間：{FormatTime(snapshot.LastIntradayEvaluatedAt)}",
+            $"下一次盤中判斷時間：{FormatTime(snapshot.NextIntradayTickAt)}",
+            $"最後收盤更新日期：{FormatDate(snapshot.LastCloseSucceededDate)}",
+            $"下一次收盤更新時間：{FormatTime(snapshot.NextCloseRunAt)}",
+            $"本次讀取持股數：{snapshot.HoldingCount}",
+            $"目前成立條件數：{snapshot.ActiveTriggerCount}",
+            $"新通知數：{snapshot.NewNotificationCount}",
+            $"進場價/平均價異常數：{snapshot.EntryAveragePriceInvalidCount}",
+            $"現價 DDE 異常數：{snapshot.CurrentPriceInvalidCount}"
+        };
+        _workflowStatusValueLabel.Text = string.Join(Environment.NewLine, lines);
+    }
+
+    private static string FormatDate(DateOnly? value) => value is DateOnly d ? d.ToString("yyyy-MM-dd") : "－";
+
+    private static string FormatTime(DateTimeOffset? value) => value is DateTimeOffset t ? t.ToString("yyyy-MM-dd HH:mm:ss") : "－";
 
     /// <summary>設定儲存後即時同步「歷史收盤價」按鈕顯示狀態，不需重啟程式。</summary>
     private void UpdateHistoricalPriceButtonVisibility(bool visible) => _historicalPriceButton.Visible = visible;

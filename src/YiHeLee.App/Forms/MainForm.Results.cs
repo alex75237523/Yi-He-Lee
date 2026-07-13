@@ -198,8 +198,9 @@ internal sealed partial class MainForm
             Padding = new Padding(16)
         };
 
-        var retryButton = new Button { Text = "立即重新執行", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowOnly, MinimumSize = new Size(150, 36), Padding = new Padding(12, 2, 12, 2), TextAlign = ContentAlignment.MiddleCenter };
-        retryButton.Click += async (_, _) => await ExecuteResultActionAsync(retryButton, () => _runNowAction(targetDate));
+        // 指定日期重跑屬於收盤／歷史資料流程（2026-07-13 盤中／收盤流程拆分），不啟動盤中客戶判斷。
+        var retryButton = new Button { Text = "重新執行收盤更新", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowOnly, MinimumSize = new Size(150, 36), Padding = new Padding(12, 2, 12, 2), TextAlign = ContentAlignment.MiddleCenter };
+        retryButton.Click += async (_, _) => await ExecuteResultActionAsync(retryButton, () => _runCloseAction(targetDate));
         footer.Controls.Add(retryButton);
 
         var secondaryButton = new Button { Text = secondaryButtonText, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowOnly, MinimumSize = new Size(150, 36), Padding = new Padding(12, 2, 12, 2), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(0, 0, 12, 0) };

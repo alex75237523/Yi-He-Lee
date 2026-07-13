@@ -15,7 +15,7 @@ public sealed class AppSettings
     public string OutputWorksheetName { get; set; } = "每日五日均價策略";
     public List<string> ExcludedWorksheetNames { get; set; } = ["總表", "每日五日均價策略"];
 
-    /// <summary>自訂程式圖示檔路徑；留空時使用內建 V1.3 圖示。支援 .ico 與常見圖片格式。</summary>
+    /// <summary>自訂程式圖示檔路徑；留空時使用內建 V2.0 圖示。支援 .ico 與常見圖片格式。</summary>
     public string AppIconPath { get; set; } = string.Empty;
 
     /// <summary>依專案固定規範，實際儲存時一律校正為台北時間 13:35。</summary>

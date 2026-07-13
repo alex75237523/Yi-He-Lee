@@ -181,7 +181,7 @@ internal sealed partial class MainForm
         var row = 0;
         AddLabel(panel, row, "程式圖示");
         _appIconPathTextBox.Dock = DockStyle.Fill;
-        _appIconPathTextBox.PlaceholderText = "留空使用內建 V1.3 圖示；可輸入 .ico、.png、.jpg、.jpeg、.bmp";
+        _appIconPathTextBox.PlaceholderText = "留空使用內建 V2.0 圖示；可輸入 .ico、.png、.jpg、.jpeg、.bmp";
         panel.Controls.Add(_appIconPathTextBox, 1, row);
         var browseButton = new Button { Text = "選擇圖示…", AutoSize = true };
         browseButton.Click += (_, _) => BrowseAppIcon();

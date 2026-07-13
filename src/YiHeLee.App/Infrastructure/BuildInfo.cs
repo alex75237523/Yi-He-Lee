@@ -66,7 +66,7 @@ internal static class BuildInfo
 
     public static string DisplayVersion => NormalizeVersion(Version);
 
-    /// <summary>供主畫面標題列顯示的精簡版本字串，例如 "V1.3 (a1b2c3d4)"。</summary>
+    /// <summary>供主畫面標題列顯示的精簡版本字串，例如 "V2.0 (a1b2c3d4)"。</summary>
     public static string ShortDescription => $"V{DisplayVersion} ({ShortCommitSha})";
 
     private static string ShortCommitSha

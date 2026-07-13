@@ -9,6 +9,9 @@ public sealed class AppSettings
     public string OutputWorksheetName { get; set; } = "每日五日均價策略";
     public List<string> ExcludedWorksheetNames { get; set; } = ["總表", "每日五日均價策略"];
 
+    /// <summary>自訂程式圖示檔路徑；留空時使用內建 V1.3 圖示。支援 .ico 與常見圖片格式。</summary>
+    public string AppIconPath { get; set; } = string.Empty;
+
     /// <summary>依專案固定規範，實際儲存時一律校正為台北時間 13:35。</summary>
     public TimeOnly DailyRunTime { get; set; } = FixedDailyRunTime;
 
@@ -38,6 +41,9 @@ public sealed class AppSettings
     /// <summary>設定頁是否顯示「資料來源網址」頁籤（鉅亨網來源清單）。預設隱藏，避免使用者誤改來源設定；
     /// 與 ShowHistoricalPriceButton 一樣，故意不放進設定頁籤 UI，只是 config 旗標，儲存設定時原樣保留。</summary>
     public bool ShowSourceSettings { get; set; } = false;
+
+    /// <summary>是否啟用鉅亨網址均價交叉比對；關閉時仍保留固定來源與正式 TWSE／TPEx 均價計算。</summary>
+    public bool EnableCnyesMovingAverageComparison { get; set; } = false;
 
     /// <summary>每日 13:35 自動排程是否啟用。設為 false 時排程不執行，使用者仍可手動「立即執行」。
     /// 2026-07-11 新增，預設啟用以保持既有行為。</summary>

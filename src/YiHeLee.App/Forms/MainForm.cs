@@ -47,7 +47,7 @@ internal sealed partial class MainForm : Form
         MinimumSize = new Size(1000, 740);
         Size = new Size(1000, 740);
         Font = new Font("Microsoft JhengHei UI", 10F);
-        Icon = AdministratorHelper.IsAdministrator() ? SystemIcons.Shield : SystemIcons.Application;
+        ApplyAppIcon(initialSettings);
 
         _tabs = new TabControl { Dock = DockStyle.Fill };
         _operationsTab = BuildOperationsTab(initialSettings.ShowHistoricalPriceButton, initialSettings.ShowStatusText);
@@ -110,4 +110,11 @@ internal sealed partial class MainForm : Form
     public void ShowOperationsTab() => _tabs.SelectedTab = _operationsTab;
 
     public void ShowSettingsTab() => _tabs.SelectedTab = _settingsTab;
+
+    public void ApplyAppIcon(AppSettings settings)
+    {
+        var oldIcon = Icon;
+        Icon = AppIcon.Create(settings);
+        oldIcon?.Dispose();
+    }
 }

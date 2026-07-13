@@ -64,11 +64,31 @@ internal static class BuildInfo
         }
     }
 
-    /// <summary>供主畫面標題列顯示的精簡版本字串，例如 "v1.0.0.0 (a1b2c3d4)"。</summary>
-    public static string ShortDescription => $"v{Version} ({ShortCommitSha})";
+    public static string DisplayVersion => NormalizeVersion(Version);
+
+    /// <summary>供主畫面標題列顯示的精簡版本字串，例如 "V1.3 (a1b2c3d4)"。</summary>
+    public static string ShortDescription => $"V{DisplayVersion} ({ShortCommitSha})";
 
     private static string ShortCommitSha
         => IsFromPublishScript && GitCommitSha.Length > 12 ? GitCommitSha[..12] : GitCommitSha;
+
+    private static string NormalizeVersion(string version)
+    {
+        var text = version.Trim();
+        var parts = text.Split('.');
+        if (parts.Length <= 2 || parts.Any(part => !int.TryParse(part, out _)))
+        {
+            return text;
+        }
+
+        var last = parts.Length - 1;
+        while (last >= 2 && parts[last] == "0")
+        {
+            last--;
+        }
+
+        return string.Join('.', parts.Take(last + 1));
+    }
 
     private static string ReadStringOrDefault(JsonElement root, string propertyName, string defaultValue)
         => root.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String

@@ -168,7 +168,11 @@ public sealed class DailyJobService
 
             // 步驟四：鉅亨網多頭／空頭排列完整清單（集中＋店頭），只在官方均線算完後作清單保存與交叉驗證。
             // 網站尚未更新或擷取失敗時，只記錄提醒訊息，不影響已由 DB 官方收盤價算出的正式均線與策略流程。
-            _userInteraction.ShowStatus($"正在擷取 {targetDate:yyyy-MM-dd} 鉅亨網清單並做最後比對……", 82);
+            _userInteraction.ShowStatus(
+                settings.EnableCnyesMovingAverageComparison
+                    ? $"正在擷取 {targetDate:yyyy-MM-dd} 鉅亨網清單並做最後比對……"
+                    : $"正在擷取 {targetDate:yyyy-MM-dd} 鉅亨網清單……",
+                82);
             try
             {
                 cnyesBatches = await CrawlAllRequiredBatchesAsync(jobId, settings, targetDate, cancellationToken).ConfigureAwait(false);
@@ -185,7 +189,14 @@ public sealed class DailyJobService
                 _logger.Warning(cnyesReminder);
             }
 
-            _ = CrossValidateWithCnyes(cnyesBatches, movingAverages);
+            if (settings.EnableCnyesMovingAverageComparison)
+            {
+                _ = CrossValidateWithCnyes(cnyesBatches, movingAverages);
+            }
+            else
+            {
+                _logger.Info("設定已關閉鉅亨網址均價比對；本次略過鉅亨 MA 與官方 MA 交叉驗證。");
+            }
 
             if (settings.ShowExcelSafetyPrompt)
             {
@@ -232,7 +243,11 @@ public sealed class DailyJobService
             await _excelWorkbookService.WriteStrategyResultsAsync(settings, targetDate, movingAverageSnapshots, cancellationToken).ConfigureAwait(false);
 
             var completedAt = _clock.GetTaipeiNow();
-            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價；比較基準：Excel「進場價/平均價」與「現價」須同時達標（雙價格判斷）。";
+            var successMessage = $"完成：鉅亨清單 {totalCrawled} 筆、持股 {holdingCount} 筆、策略通知 {alerts.Count(x => x.AlertKind == AlertKind.MovingAverageTriggered)} 筆。均價來源：TWSE／TPEx／TPEx興櫃 官方收盤價；比較基準：任一通知用均價大於或等於 Excel「進場價/平均價」或「現價」其中一項即成立。";
+            if (!settings.EnableCnyesMovingAverageComparison)
+            {
+                successMessage += " 鉅亨網址均價比對已依設定略過。";
+            }
             var invalidCurrentPriceCount = alerts.Count(x => x.AlertKind == AlertKind.CurrentPriceInvalid);
             if (invalidCurrentPriceCount > 0)
             {

@@ -26,6 +26,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly IStockPriceValidationService _stockPriceValidationService;
     private readonly Form _dispatcherForm;
     private readonly NotifyIcon _notifyIcon;
+    private Icon _trayIcon;
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _runNowItem;
     private readonly ToolStripMenuItem _settingsItem;
@@ -120,9 +121,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             new ToolStripMenuItem("結束", null, async (_, _) => await ExitApplicationAsync())
         ]);
 
+        _trayIcon = AppIcon.CreateDefault();
         _notifyIcon = new NotifyIcon
         {
-            Icon = AdministratorHelper.IsAdministrator() ? SystemIcons.Shield : SystemIcons.Application,
+            Icon = _trayIcon,
             Text = "Yi He Lee－等待每日 13:35",
             Visible = true,
             ContextMenuStrip = menu
@@ -138,6 +140,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _dispatcherForm.BeginInvoke(new Action(async () =>
         {
             var settings = await _settingsStore.LoadAsync(_lifetimeCts.Token);
+            ApplyTrayIcon(settings);
             // 依 config 旗標同步系統匣選單「歷史收盤價」項目的顯示狀態。
             _historicalPriceItem.Visible = settings.ShowHistoricalPriceButton;
 
@@ -263,6 +266,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private async Task SaveSettingsAsync(AppSettings settings)
     {
         await _settingsStore.SaveAsync(settings, _lifetimeCts.Token);
+        ApplyTrayIcon(settings);
+        _historicalPriceForm?.ApplyAppIcon(settings);
         // 設定儲存後即時同步系統匣選單「歷史收盤價」項目的顯示狀態，不需重啟程式。
         _historicalPriceItem.Visible = settings.ShowHistoricalPriceButton;
         try
@@ -280,6 +285,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         SetStatus("設定已儲存，等待每日台北時間 13:35", 0);
+    }
+
+    private void ApplyTrayIcon(AppSettings settings)
+    {
+        var newIcon = AppIcon.Create(settings);
+        var oldIcon = _trayIcon;
+        _trayIcon = newIcon;
+        _notifyIcon.Icon = newIcon;
+        oldIcon.Dispose();
     }
 
     private async Task OpenConfiguredExcelAsync()
@@ -406,6 +420,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _historicalPriceForm?.Close();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
+            _trayIcon.Dispose();
             _dispatcherForm.Dispose();
             ExitThread();
         }
@@ -424,6 +439,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 _notifyIcon.Visible = false;
                 _notifyIcon.Dispose();
+                _trayIcon.Dispose();
             }
             catch (ObjectDisposedException)
             {

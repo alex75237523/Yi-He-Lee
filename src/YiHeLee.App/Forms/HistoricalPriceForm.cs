@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using YiHeLee.App.Infrastructure;
 using YiHeLee.Application.Abstractions;
 using YiHeLee.Domain;
 
@@ -84,7 +85,7 @@ internal sealed class HistoricalPriceForm : Form
         MinimumSize = new Size(1080, 760);
         Size = new Size(1280, 860);
         Font = new Font("Microsoft JhengHei UI", 10F);
-        Icon = SystemIcons.Application;
+        Icon = AppIcon.CreateDefault();
 
         // 依實際字型量測日期欄需要的寬度（最寬日期＋下拉鈕＋邊框），文字放大時日期才不會被截斷。
         var dateWidth = TextRenderer.MeasureText("2026/12/31", Font).Width
@@ -283,6 +284,9 @@ internal sealed class HistoricalPriceForm : Form
     {
         try
         {
+            var settings = await _settingsStore.LoadAsync(CancellationToken.None).ConfigureAwait(true);
+            ApplyAppIcon(settings);
+
             var latestJob = await _importRepository.GetLatestJobProgressAsync(CancellationToken.None).ConfigureAwait(true);
             if (latestJob is not null)
             {
@@ -301,6 +305,13 @@ internal sealed class HistoricalPriceForm : Form
         {
             _logger.Error("開啟歷史收盤價畫面時載入初始資料失敗。", ex);
         }
+    }
+
+    public void ApplyAppIcon(AppSettings settings)
+    {
+        var oldIcon = Icon;
+        Icon = AppIcon.Create(settings);
+        oldIcon?.Dispose();
     }
 
     private void ClearFilters()

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using YiHeLee.App.Infrastructure;
 using YiHeLee.Application.Services;
 using YiHeLee.Domain;
 
@@ -8,6 +9,7 @@ internal sealed partial class MainForm
 {
     private readonly TextBox _workbookPathTextBox = new();
     private readonly TextBox _outputWorksheetTextBox = new();
+    private readonly TextBox _appIconPathTextBox = new();
     private readonly NumericUpDown _retryMinutes = new();
     private readonly NumericUpDown _maximumAttempts = new();
     private readonly NumericUpDown _crawlerRetryCount = new();
@@ -21,6 +23,7 @@ internal sealed partial class MainForm
     private readonly CheckBox _showSafetyPrompt = new();
     private readonly CheckBox _autoOpenWorkbook = new();
     private readonly CheckBox _enableDailySchedule = new();
+    private readonly CheckBox _enableCnyesMovingAverageComparison = new();
     private readonly TextBox _excludedColors = new();
     private readonly TextBox _excludedMarkers = new();
     private readonly BindingList<SourceRowModel> _sourceRows = [];
@@ -38,6 +41,9 @@ internal sealed partial class MainForm
     /// <summary>「資料來源網址」頁籤顯示與否僅為 config 旗標（ShowSourceSettings），故意不放進設定頁籤 UI，
     /// 這裡只是儲存時原樣保留。隱藏時來源清單仍會原樣載入並隨設定一起儲存，不會遺失。</summary>
     private bool _showSourceSettingsSetting;
+    private List<string> _excludedWorksheetNamesSetting = [];
+    private OfficialMarketDataSettings _officialMarketDataSetting = new();
+    private StockHistoryImportOptions _stockHistoryImportSetting = new();
 
     private TabPage BuildSettingsTab(AppSettings settings)
     {
@@ -97,11 +103,12 @@ internal sealed partial class MainForm
             Dock = DockStyle.Fill,
             AutoScroll = true,
             ColumnCount = 2,
-            RowCount = 3,
+            RowCount = 4,
             Padding = new Padding(16, 14, 16, 6)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -110,17 +117,21 @@ internal sealed partial class MainForm
         layout.Controls.Add(excelGroup, 0, 0);
         layout.SetColumnSpan(excelGroup, 2);
 
+        var appearanceGroup = BuildAppearanceSettingsGroup();
+        layout.Controls.Add(appearanceGroup, 0, 1);
+        layout.SetColumnSpan(appearanceGroup, 2);
+
         var retryGroup = BuildScheduleAndRetryGroup();
-        layout.Controls.Add(retryGroup, 0, 1);
+        layout.Controls.Add(retryGroup, 0, 2);
         layout.SetColumnSpan(retryGroup, 2);
 
         var behaviorGroup = BuildBehaviorOptionsGroup();
         behaviorGroup.Margin = new Padding(0, 0, 7, 8);
-        layout.Controls.Add(behaviorGroup, 0, 2);
+        layout.Controls.Add(behaviorGroup, 0, 3);
 
         var exclusionGroup = BuildExclusionRulesGroup();
         exclusionGroup.Margin = new Padding(7, 0, 0, 8);
-        layout.Controls.Add(exclusionGroup, 1, 2);
+        layout.Controls.Add(exclusionGroup, 1, 3);
 
         tab.Controls.Add(layout);
         return tab;
@@ -154,6 +165,35 @@ internal sealed partial class MainForm
             Anchor = AnchorStyles.Left
         }, 1, row);
         row++;
+
+        group.Controls.Add(panel);
+        return group;
+    }
+
+    private Control BuildAppearanceSettingsGroup()
+    {
+        var group = CreateSectionGroup("程式外觀");
+        var panel = CreateFieldPanel();
+
+        var row = 0;
+        AddLabel(panel, row, "程式圖示");
+        _appIconPathTextBox.Dock = DockStyle.Fill;
+        _appIconPathTextBox.PlaceholderText = "留空使用內建 V1.3 圖示；可輸入 .ico、.png、.jpg、.jpeg、.bmp";
+        panel.Controls.Add(_appIconPathTextBox, 1, row);
+        var browseButton = new Button { Text = "選擇圖示…", AutoSize = true };
+        browseButton.Click += (_, _) => BrowseAppIcon();
+        panel.Controls.Add(browseButton, 2, row++);
+
+        var note = new Label
+        {
+            Text = "此設定只影響主視窗、歷史收盤價視窗與右下角系統匣圖示；路徑失效時會自動改用內建圖示。",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Anchor = AnchorStyles.Left,
+            Padding = new Padding(0, 2, 0, 4)
+        };
+        panel.Controls.Add(note, 1, row);
+        panel.SetColumnSpan(note, 2);
 
         group.Controls.Add(panel);
         return group;
@@ -232,7 +272,8 @@ internal sealed partial class MainForm
             (_createOutputSheet, "找不到輸出頁籤時自動建立"),
             (_showSafetyPrompt, "操作 Excel 前顯示防呆確認"),
             (_autoOpenWorkbook, "找不到已開啟的活頁簿時自動開啟 Excel 檔案"),
-            (_enableDailySchedule, "每日 13:35 自動執行排程")
+            (_enableDailySchedule, "每日 13:35 自動執行排程"),
+            (_enableCnyesMovingAverageComparison, "啟用鉅亨網址均價比對")
         ];
         foreach (var (checkBox, text) in options)
         {
@@ -408,6 +449,7 @@ internal sealed partial class MainForm
     {
         _workbookPathTextBox.Text = settings.WorkbookPath;
         _outputWorksheetTextBox.Text = settings.OutputWorksheetName;
+        _appIconPathTextBox.Text = settings.AppIconPath;
         _retryMinutes.Value = Clamp(settings.RetryIntervalMinutes, _retryMinutes);
         _maximumAttempts.Value = Clamp(settings.MaximumDailyAttempts, _maximumAttempts);
         _crawlerRetryCount.Value = Clamp(settings.CrawlerShortRetryCount, _crawlerRetryCount);
@@ -421,11 +463,15 @@ internal sealed partial class MainForm
         _showSafetyPrompt.Checked = settings.ShowExcelSafetyPrompt;
         _autoOpenWorkbook.Checked = settings.AutoOpenWorkbookIfClosed;
         _enableDailySchedule.Checked = settings.EnableDailySchedule;
+        _enableCnyesMovingAverageComparison.Checked = settings.EnableCnyesMovingAverageComparison;
         _excludedColors.Text = string.Join(", ", settings.ExcludedHoldingFillColors);
         _excludedMarkers.Text = string.Join(Environment.NewLine, settings.ExcludedHoldingTextMarkers);
         _showHistoricalPriceButtonSetting = settings.ShowHistoricalPriceButton;
         _showStatusTextSetting = settings.ShowStatusText;
         _showSourceSettingsSetting = settings.ShowSourceSettings;
+        _excludedWorksheetNamesSetting = settings.ExcludedWorksheetNames.ToList();
+        _officialMarketDataSetting = settings.OfficialMarketData;
+        _stockHistoryImportSetting = settings.StockHistoryImport;
 
         foreach (var source in settings.Sources)
         {
@@ -450,6 +496,26 @@ internal sealed partial class MainForm
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             _workbookPathTextBox.Text = dialog.FileName;
+        }
+    }
+
+    private void BrowseAppIcon()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "選擇程式圖示",
+            Filter = "圖示或圖片 (*.ico;*.png;*.jpg;*.jpeg;*.bmp)|*.ico;*.png;*.jpg;*.jpeg;*.bmp|所有檔案 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (File.Exists(_appIconPathTextBox.Text))
+        {
+            dialog.FileName = _appIconPathTextBox.Text;
+        }
+
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            _appIconPathTextBox.Text = dialog.FileName;
         }
     }
 
@@ -490,6 +556,7 @@ internal sealed partial class MainForm
             UpdateAdministratorStatus();
             UpdateHistoricalPriceButtonVisibility(settings.ShowHistoricalPriceButton);
             UpdateStatusTextVisibility(settings.ShowStatusText);
+            ApplyAppIcon(settings);
             MessageBox.Show(this, "設定已儲存。", "Yi He Lee", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
@@ -509,6 +576,8 @@ internal sealed partial class MainForm
     {
         WorkbookPath = _workbookPathTextBox.Text.Trim(),
         OutputWorksheetName = _outputWorksheetTextBox.Text.Trim(),
+        AppIconPath = _appIconPathTextBox.Text.Trim(),
+        ExcludedWorksheetNames = _excludedWorksheetNamesSetting,
         DailyRunTime = AppSettings.FixedDailyRunTime,
         RetryIntervalMinutes = Decimal.ToInt32(_retryMinutes.Value),
         MaximumDailyAttempts = Decimal.ToInt32(_maximumAttempts.Value),
@@ -523,11 +592,14 @@ internal sealed partial class MainForm
         ShowExcelSafetyPrompt = _showSafetyPrompt.Checked,
         AutoOpenWorkbookIfClosed = _autoOpenWorkbook.Checked,
         EnableDailySchedule = _enableDailySchedule.Checked,
+        EnableCnyesMovingAverageComparison = _enableCnyesMovingAverageComparison.Checked,
         ShowHistoricalPriceButton = _showHistoricalPriceButtonSetting,
         ShowStatusText = _showStatusTextSetting,
         ShowSourceSettings = _showSourceSettingsSetting,
         ExcludedHoldingFillColors = SplitValues(_excludedColors.Text),
         ExcludedHoldingTextMarkers = SplitValues(_excludedMarkers.Text),
+        OfficialMarketData = _officialMarketDataSetting,
+        StockHistoryImport = _stockHistoryImportSetting,
         Sources = _sourceRows.Select(x => x.ToSetting()).ToList()
     };
 

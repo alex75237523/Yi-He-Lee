@@ -133,8 +133,8 @@ public sealed class DailyJobServiceTests : IDisposable
     [Fact]
     public async Task 現價正常但未觸發任何均線條件時_不產生中央通知但Excel仍須輸出完整列()
     {
-        // 進場價/平均價與現價都低於所有均線，三項條件皆不成立。
-        var holding = CreateHolding("2330", "台積電", currentPrice: 1m);
+        // 進場價/平均價與現價都高於所有均線，三項條件皆不成立。
+        var holding = CreateHolding("2330", "台積電", currentPrice: 999_999m);
         var ma = FullHistoryMovingAverage("2330", close: 900m, ma5: 890m, ma20: 880m, ma60: 870m, ma120: 860m);
 
         var (service, excel, _, _, repository, _) = CreateService(
@@ -208,7 +208,7 @@ public sealed class DailyJobServiceTests : IDisposable
     public async Task Excel均價前置列數等於DB均價快照_不含客戶診斷列()
     {
         var triggeredHolding = CreateHolding("2330", "台積電", currentPrice: 900m); // 會觸發
-        var notTriggeredHolding = CreateHolding("5351", "鈺創", currentPrice: 1m); // 不會觸發
+        var notTriggeredHolding = CreateHolding("5351", "鈺創", currentPrice: 999_999m); // 不會觸發
         var invalidDdeHolding = CreateHolding("3691", "碩禾", currentPrice: null, currentPriceIssue: "#N/A"); // 現價無效
         var unrecognizedHolding = CreateHolding("10037677", "疑似金額", currentPrice: 100m); // 無法識別的代碼（診斷列）
 
@@ -241,13 +241,12 @@ public sealed class DailyJobServiceTests : IDisposable
         Assert.DoesNotContain(excel.WrittenResults!, x => x.StockCode == "10037677");
     }
 
-    // entryAveragePrice 預設為 1：本測試檔案聚焦於「現價（DDE）異常隔離」，與進場價/平均價無關；
-    // 最新規則為均價 <= 進場價/平均價 OR 均價 <= 現價，因此避免預設進場價讓均價誤觸發，
-    // 需要觸發的案例會讓現價本身足以觸發即可成立。
+    // entryAveragePrice 預設為極大值：本測試檔案聚焦於「現價（DDE）異常隔離」，與進場價/平均價無關；
+    // 最新規則為均價 >= 進場價/平均價 OR 均價 >= 現價，因此只要現價本身足以觸發即可成立，
     // 不需逐一修改每個既有呼叫點的進場價/平均價。
     private static CustomerHolding CreateHolding(
         string code, string name, decimal? currentPrice, string? currentPriceIssue = null,
-        decimal? entryAveragePrice = 1m, string? entryAveragePriceIssue = null) => new(
+        decimal? entryAveragePrice = 999_999m, string? entryAveragePriceIssue = null) => new(
         TradeDate,
         @"C:\Data\客戶.xlsx",
         "客戶頁籤",

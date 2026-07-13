@@ -6,12 +6,12 @@ namespace YiHeLee.Application.Services;
 /// 均線策略判斷。正式 MA5／MA20／MA120 一律來自本系統依 TWSE／TPEx 官方收盤價自行計算的
 /// <see cref="MovingAverageResult"/>；鉅亨網多頭／空頭排列僅作交叉驗證與清單保存，不再是正式均價來源。
 /// 2026-07-13 正式更正雙價格判斷方向：客戶 Excel「進場價/平均價」與「現價」是兩個完全獨立、不得混用的欄位，
-/// 每一條均價只要小於或等於「進場價/平均價」或「現價」其中一個價格就算成立（見 <see cref="IsDualPriceMatch"/>）。
+/// 每一條均價只要大於或等於「進場價/平均價」或「現價」其中一個價格就算成立（見 <see cref="IsDualPriceMatch"/>）。
 /// </summary>
 public sealed class StrategyEvaluationService
 {
     /// <summary>
-    /// 依需求逐項判斷 MA5、MA20、MA120：每一條均價只要小於或等於「進場價/平均價」或「現價」其中一個價格
+    /// 依需求逐項判斷 MA5、MA20、MA120：每一條均價只要大於或等於「進場價/平均價」或「現價」其中一個價格
     /// 才算成立（<see cref="IsDualPriceMatch"/>），任一條件成立即產生通知。MA60 僅保存與顯示，不參與觸發。
     /// 任一均線因交易日數不足而為 null 時，該項不得觸發、也不得硬算。
     /// 「進場價/平均價」與「現價」皆可能個別無效（Excel 錯誤值、空白、0、負數或無法解析）；兩者是完全獨立的
@@ -242,7 +242,7 @@ public sealed class StrategyEvaluationService
                 ma5Triggered,
                 ma20Triggered,
                 ma120Triggered,
-                $"均價已小於或等於進場價/平均價或現價其中一項：{string.Join("、", triggers)}",
+                $"均價已大於或等於進場價/平均價或現價其中一項：{string.Join("、", triggers)}",
                 marketType,
                 null,
                 null,
@@ -391,8 +391,8 @@ public sealed class StrategyEvaluationService
             if (ma20Triggered) triggers.Add("20 日均價");
             if (ma120Triggered) triggers.Add("120 日均價");
             var triggerDescription = anyTriggered
-                ? $"均價已小於或等於進場價/平均價或現價其中一項：{string.Join("、", triggers)}"
-                : "MA5／MA20／MA120 尚未有任一均價小於或等於進場價/平均價或現價，未觸發。";
+                ? $"均價已大於或等於進場價/平均價或現價其中一項：{string.Join("、", triggers)}"
+                : "MA5／MA20／MA120 尚未有任一均價大於或等於進場價/平均價或現價，未觸發。";
 
             result.Add(new HoldingStrategyResult(
                 tradeDate, holding.CustomerName, holding.SheetName, holding.ExcelRow,
@@ -413,7 +413,7 @@ public sealed class StrategyEvaluationService
     }
 
     /// <summary>
-    /// 單一均價的雙價格判斷核心：均價只要小於或等於「進場價/平均價」或「現價」其中一個價格就算成立。
+    /// 單一均價的雙價格判斷核心：均價只要大於或等於「進場價/平均價」或「現價」其中一個價格就算成立。
     /// <see cref="Evaluate"/>、<see cref="EvaluateAll"/> 與畫面顯示都必須透過本方法判斷，
     /// 不得各自重複實作而產生不一致的結果。均線為 null（交易日數不足）時一律不成立，也不得硬算。
     /// </summary>
@@ -423,7 +423,7 @@ public sealed class StrategyEvaluationService
         decimal currentPrice)
     {
         return movingAverage is decimal ma
-            && (ma <= entryAveragePrice || ma <= currentPrice);
+            && (ma >= entryAveragePrice || ma >= currentPrice);
     }
 
     private static string DescribeCalculationStatus(CalculationStatus status) => status switch

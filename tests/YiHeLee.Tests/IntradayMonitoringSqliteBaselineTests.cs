@@ -210,11 +210,13 @@ public sealed class IntradayMonitoringSqliteBaselineTests : IDisposable
                     4,
                     "2330",
                     "台積電",
-                    CurrentPrice: 110m,
+                    // 回補 120 天（收盤 100～219）算出 MA5=217、MA20=209.5；
+                    // 進場價 215 > MA20 209.5、現價 210 < MA5 217 → 2026-07-19 複合條件成立。
+                    CurrentPrice: 210m,
                     Quantity: 1,
                     HoldingKey: "2330-4",
                     CurrentPriceIssue: null,
-                    EntryAveragePrice: 110m,
+                    EntryAveragePrice: 215m,
                     EntryAveragePriceIssue: null)
             ];
             return Task.FromResult(holdings);

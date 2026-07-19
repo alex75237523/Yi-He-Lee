@@ -21,7 +21,7 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 盤中判斷只用上一交易日均價_不抓官方資料_不算均線_不寫Excel()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
 
         var summary = await fixture.Service.RunOnceAsync(isManualRun: false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
 
@@ -56,12 +56,12 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 盤中判斷使用Excel當下的進場價與DDE現價()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 851.5m, currentPrice: 842.25m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880.5m, currentPrice: 842.25m, excelRow: 4)];
 
         var summary = await fixture.Service.RunOnceAsync(isManualRun: false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
 
         var alert = Assert.Single(summary.Alerts, x => x.AlertKind == AlertKind.MovingAverageTriggered);
-        Assert.Equal(851.5m, alert.EntryAveragePrice);
+        Assert.Equal(880.5m, alert.EntryAveragePrice);
         Assert.Equal(842.25m, alert.CurrentPrice);
     }
 
@@ -69,7 +69,7 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 盤中判斷執行時_會回報目前步驟與進度條百分比()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
 
         var summary = await fixture.Service.RunOnceAsync(isManualRun: true, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
 
@@ -89,7 +89,7 @@ public sealed class IntradayMonitoringServiceTests
         var fixture = CreateFixture();
         fixture.Excel.Holdings =
         [
-            CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4),
+            CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4),
             CreateHolding("5351", "鈺創", entryAveragePrice: 100m, currentPrice: null, currentPriceIssue: "#N/A（DDE 尚未取得資料）", excelRow: 5)
         ];
 
@@ -108,7 +108,7 @@ public sealed class IntradayMonitoringServiceTests
         var fixture = CreateFixture();
 
         // 第一分鐘：成立 → 新通知。
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
         var tick1 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(1, tick1.NewNotificationCount);
 
@@ -120,7 +120,7 @@ public sealed class IntradayMonitoringServiceTests
         Assert.All(fixture.StateRepository.GetStatesSnapshot().Where(x => x.AlertKind == AlertKind.MovingAverageTriggered),
             state => Assert.True(state.IsActive));
 
-        // 第三分鐘：兩個價格都高於所有通知用均線 → 條件不成立，記錄清除。
+        // 第三分鐘：現價 940 不低於 MA5 860（第二條不成立）→ 複合條件不成立，記錄清除。
         fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 4)];
         var tick3 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
@@ -135,7 +135,7 @@ public sealed class IntradayMonitoringServiceTests
 
         // 第四分鐘：再次成立 → 可以再次通知。
         fixture.Clock.Advance(TimeSpan.FromMinutes(1));
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
         var tick4 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(1, tick4.NewNotificationCount);
     }
@@ -144,13 +144,13 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 程式重啟後從SQLite恢復狀態_持續成立的條件不重複通知()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
         var tick1 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(1, tick1.NewNotificationCount);
 
         // 以同一個狀態儲存庫建立全新的 Service 實例，模擬程式重啟。
         var restarted = CreateFixture(fixture.StateRepository, fixture.Clock);
-        restarted.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        restarted.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
         restarted.Clock.Advance(TimeSpan.FromMinutes(1));
         var tick2 = await restarted.Service.RunOnceAsync(false, restarted.Clock.GetTaipeiNow(), CancellationToken.None);
 
@@ -159,15 +159,16 @@ public sealed class IntradayMonitoringServiceTests
     }
 
     [Fact]
-    public async Task 不同持股列與不同MA條件的通知狀態互相獨立_不互相覆蓋()
+    public async Task 不同持股列的複合通知狀態互相獨立_每列一筆MaWindow0狀態_不互相覆蓋()
     {
         var fixture = CreateFixture();
-        // A（列 4）：全部通知用均線皆高於進場價與現價 → MA5／MA20／MA120 三個條件成立。
-        // B（列 5）：價格介於 MA20（870）與 MA120（890）之間 → 只有 MA120 成立。
+        // 基準均價 MA5=860、MA20=870。複合成立需要 進場價 > 870 且 現價 < 860。
+        // A（列 4）：進場價 880 > 870、現價 840 < 860 → 複合成立（單一 MaWindow=0 狀態）。
+        // B（列 5）：進場價 880 > 870、現價 855 < 860 → 複合成立（獨立的單一狀態）。
         fixture.Excel.Holdings =
         [
-            CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4),
-            CreateHolding("2330", "台積電", entryAveragePrice: 875m, currentPrice: 870m, excelRow: 5)
+            CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4),
+            CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 855m, excelRow: 5)
         ];
 
         var tick1 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
@@ -176,14 +177,16 @@ public sealed class IntradayMonitoringServiceTests
         var states = fixture.StateRepository.GetStatesSnapshot()
             .Where(x => x.AlertKind == AlertKind.MovingAverageTriggered)
             .ToArray();
-        Assert.Equal(3, states.Count(x => x.ExcelRow == 4 && x.IsActive)); // MA5／MA20／MA120
-        Assert.Single(states, x => x.ExcelRow == 5 && x.MaWindow == 120 && x.IsActive);
+        // 2026-07-19 起每列複合成立只會有一筆 MaWindow=0 狀態，不再依 MA 天數分成多筆。
+        Assert.All(states, s => Assert.Equal(0, s.MaWindow));
+        Assert.Single(states, x => x.ExcelRow == 4 && x.MaWindow == 0 && x.IsActive);
+        Assert.Single(states, x => x.ExcelRow == 5 && x.MaWindow == 0 && x.IsActive);
 
-        // B 的兩個價格都高於 MA120 → 條件不成立，只清除 B 的狀態，A 的三個條件不受影響、也不重複通知。
+        // B 的現價 940 不低於 MA5 860（第二條不成立）→ 複合不成立，只清除 B 的狀態，A 不受影響、也不重複通知。
         fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         fixture.Excel.Holdings =
         [
-            CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4),
+            CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4),
             CreateHolding("2330", "台積電", entryAveragePrice: 950m, currentPrice: 940m, excelRow: 5)
         ];
         var tick2 = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
@@ -192,8 +195,62 @@ public sealed class IntradayMonitoringServiceTests
         states = fixture.StateRepository.GetStatesSnapshot()
             .Where(x => x.AlertKind == AlertKind.MovingAverageTriggered)
             .ToArray();
-        Assert.Equal(3, states.Count(x => x.ExcelRow == 4 && x.IsActive));
-        Assert.Single(states, x => x.ExcelRow == 5 && x.MaWindow == 120 && !x.IsActive && x.ClearedAt is not null);
+        Assert.Single(states, x => x.ExcelRow == 4 && x.MaWindow == 0 && x.IsActive);
+        Assert.Single(states, x => x.ExcelRow == 5 && x.MaWindow == 0 && !x.IsActive && x.ClearedAt is not null);
+    }
+
+    [Fact]
+    public async Task 舊版當日MaWindow5_20_120殘留狀態_首次執行新版時被清除_不阻擋新的複合通知()
+    {
+        var fixture = CreateFixture();
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
+
+        // 模擬舊版本當日殘留的 MaWindow=5／20／120 Active 狀態（同一持股列）。
+        var now = fixture.Clock.GetTaipeiNow();
+        await fixture.StateRepository.UpsertAlertStatesAsync(
+        [
+            LegacyMovingAverageState(maWindow: 5, now),
+            LegacyMovingAverageState(maWindow: 20, now),
+            LegacyMovingAverageState(maWindow: 120, now)
+        ], CancellationToken.None);
+
+        var tick = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
+
+        // 新的 MaWindow=0 複合條件視為全新通知，不被舊 MaWindow=5／20／120 狀態阻擋。
+        Assert.Equal(1, tick.NewNotificationCount);
+
+        var states = fixture.StateRepository.GetStatesSnapshot()
+            .Where(x => x.AlertKind == AlertKind.MovingAverageTriggered)
+            .ToArray();
+        Assert.Single(states, x => x.MaWindow == 0 && x.IsActive);
+        // 舊 5／20／120 狀態第一次執行新版時被清除，不再繼續影響。
+        Assert.All(states.Where(x => x.MaWindow != 0), s =>
+        {
+            Assert.False(s.IsActive);
+            Assert.NotNull(s.ClearedAt);
+        });
+    }
+
+    [Fact]
+    public async Task 手動立即盤中判斷與排程盤中判斷使用完全相同的複合公式()
+    {
+        var manual = CreateFixture();
+        manual.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
+        var manualSummary = await manual.Service.RunOnceAsync(isManualRun: true, manual.Clock.GetTaipeiNow(), CancellationToken.None);
+
+        var scheduled = CreateFixture();
+        scheduled.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
+        var scheduledSummary = await scheduled.Service.RunOnceAsync(isManualRun: false, scheduled.Clock.GetTaipeiNow(), CancellationToken.None);
+
+        Assert.True(manualSummary.IsManualRun);
+        Assert.False(scheduledSummary.IsManualRun);
+        Assert.Equal(scheduledSummary.ActiveTriggerCount, manualSummary.ActiveTriggerCount);
+
+        var manualAlert = Assert.Single(manualSummary.Alerts, x => x.AlertKind == AlertKind.MovingAverageTriggered);
+        var scheduledAlert = Assert.Single(scheduledSummary.Alerts, x => x.AlertKind == AlertKind.MovingAverageTriggered);
+        Assert.Equal(scheduledAlert.TriggeredMa5, manualAlert.TriggeredMa5);
+        Assert.Equal(scheduledAlert.TriggeredMa20, manualAlert.TriggeredMa20);
+        Assert.Equal(scheduledAlert.TriggerDescription, manualAlert.TriggerDescription);
     }
 
     [Fact]
@@ -230,7 +287,7 @@ public sealed class IntradayMonitoringServiceTests
         fixture.Resolver.Resolutions.Enqueue(new IntradayBaselineResolution(
             EvaluationDate, BaselineDate, true, null,
             BaselineDate, BaselineDate, BaselineDate));
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
 
         var summary = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
 
@@ -250,7 +307,7 @@ public sealed class IntradayMonitoringServiceTests
     {
         var preparation = new FakeBaselinePreparationService();
         var fixture = CreateFixture(baselinePreparationService: preparation);
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
 
         var summary = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
 
@@ -319,7 +376,7 @@ public sealed class IntradayMonitoringServiceTests
     public async Task 執行鎖被收盤更新持有時_盤中Tick直接記錄略過不排隊()
     {
         var fixture = CreateFixture();
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
 
         using (await fixture.Gate.EnterAsync("收盤更新", CancellationToken.None))
         {
@@ -350,7 +407,7 @@ public sealed class IntradayMonitoringServiceTests
         // 修復後下一分鐘照常成功；失敗不影響去重狀態的正確性。
         fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         fixture.Excel.ThrowOnRead = null;
-        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 850m, currentPrice: 840m, excelRow: 4)];
+        fixture.Excel.Holdings = [CreateHolding("2330", "台積電", entryAveragePrice: 880m, currentPrice: 840m, excelRow: 4)];
         var next = await fixture.Service.RunOnceAsync(false, fixture.Clock.GetTaipeiNow(), CancellationToken.None);
         Assert.Equal(IntradayRunStatus.Succeeded, next.Status);
         Assert.Equal(1, next.NewNotificationCount);
@@ -372,6 +429,23 @@ public sealed class IntradayMonitoringServiceTests
         currentPriceIssue,
         entryAveragePrice,
         entryAveragePriceIssue);
+
+    /// <summary>模擬舊版本（依單一 MA 天數分開去重）當日殘留的 MaWindow=5／20／120 Active 狀態，
+    /// 對應 2330／列 4 這一持股，用於驗證第一次執行新版時會被清除、不阻擋新的 MaWindow=0 複合通知。</summary>
+    private static IntradayAlertStateRecord LegacyMovingAverageState(int maWindow, DateTimeOffset now) => new(
+        EvaluationDate,
+        BaselineDate,
+        WorkbookPath,
+        "客戶頁籤",
+        4,
+        "2330",
+        AlertKind.MovingAverageTriggered,
+        maWindow,
+        IsActive: true,
+        FirstTriggeredAt: now,
+        LastEvaluatedAt: now,
+        LastNotifiedAt: now,
+        ClearedAt: null);
 
     private static Fixture CreateFixture(
         InMemoryIntradayStateRepository? stateRepository = null,

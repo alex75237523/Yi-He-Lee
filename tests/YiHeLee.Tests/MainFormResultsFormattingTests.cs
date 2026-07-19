@@ -4,8 +4,9 @@ using YiHeLee.Domain;
 namespace YiHeLee.Tests;
 
 /// <summary>
-/// 「符合均價條件」頁籤判斷明細文字測試。輸出文字必須讓一般使用者不需理解程式邏輯即可看懂為何成立，
-/// 並且只列出實際成立的「X日均價已 >= 進場價/平均價／現價」條件。
+/// 「符合通知條件」頁籤判斷明細文字測試。2026-07-19 正式策略以兩個子條件顯示：
+/// TriggeredMa20 代表「進場價/平均價 &gt; MA20」、TriggeredMa5 代表「現價 &lt; MA5」；
+/// 出現在該頁籤的持股一定兩項同時成立，判斷明細逐行列出兩個子條件與實際數值。MA120 不參與策略、不列入。
 /// internal 方法由 <c>YiHeLee.App.csproj</c> 的 InternalsVisibleTo 開放給測試專案呼叫。
 /// </summary>
 public sealed class MainFormResultsFormattingTests
@@ -14,62 +15,44 @@ public sealed class MainFormResultsFormattingTests
     private static readonly DateTimeOffset CalculatedAt = new(2026, 7, 9, 13, 35, 0, TimeSpan.FromHours(8));
 
     [Fact]
-    public void 判斷明細只顯示實際成立的價格條件()
+    public void 判斷明細逐行列出進場價與現價兩個成立子條件()
     {
+        // 進場價 120 > MA20 115、現價 98 < MA5 100 → 兩項同時成立。
         var alert = CreateAlert(
-            entryAveragePrice: 500m, currentPrice: 470m,
-            ma5: 450m, ma20: 480m, ma120: 450m,
-            triggeredMa5: false, triggeredMa20: true, triggeredMa120: false);
-
-        var detail = MainForm.BuildJudgmentDetail(alert);
-
-        Assert.Contains("現價", detail, StringComparison.Ordinal);
-        Assert.Contains("20日均價已 >= 現價 470", detail, StringComparison.Ordinal);
-        Assert.DoesNotContain("進場價/平均價", detail, StringComparison.Ordinal);
-        Assert.DoesNotContain("<", detail, StringComparison.Ordinal);
-        Assert.DoesNotContain("至少一項條件成立", detail, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void 同一均價兩個價格都成立時_逐行列出兩個成立條件()
-    {
-        var alert = CreateAlert(
-            entryAveragePrice: 470m, currentPrice: 460m,
-            ma5: 450m, ma20: 480m, ma120: 450m,
-            triggeredMa5: false, triggeredMa20: true, triggeredMa120: false);
-
-        var detail = MainForm.BuildJudgmentDetail(alert);
-        var lines = detail.Split("\r\n");
-
-        Assert.Equal(2, lines.Length);
-        Assert.Equal("20日均價已 >= 進場價/平均價 470", lines[0]);
-        Assert.Equal("20日均價已 >= 現價 460", lines[1]);
-    }
-
-    [Fact]
-    public void 同時符合多條均價時_判斷明細以換行分隔且各自列出成立條件()
-    {
-        var alert = CreateAlert(
-            entryAveragePrice: 470m, currentPrice: 500m,
-            ma5: 490m, ma20: 510m, ma120: 450m,
+            entryAveragePrice: 120m, currentPrice: 98m,
+            ma5: 100m, ma20: 115m, ma120: 90m,
             triggeredMa5: true, triggeredMa20: true, triggeredMa120: false);
 
         var detail = MainForm.BuildJudgmentDetail(alert);
         var lines = detail.Split("\r\n");
 
-        Assert.Equal(3, lines.Length);
-        Assert.Equal("5日均價已 >= 進場價/平均價 470", lines[0]);
-        Assert.Equal("20日均價已 >= 進場價/平均價 470", lines[1]);
-        Assert.Equal("20日均價已 >= 現價 500", lines[2]);
-        Assert.DoesNotContain("120日均價", detail, StringComparison.Ordinal);
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("進場價/平均價 120 > MA20 115", lines[0]);
+        Assert.Equal("現價 98 < MA5 100", lines[1]);
+        Assert.DoesNotContain("MA120", detail, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void 未觸發任何均價時_判斷明細為空()
+    public void 判斷明細只顯示實際成立的子條件()
+    {
+        // 防禦性：只有進場價 > MA20 成立時，只顯示該行（現價子條件不顯示）。
+        var alert = CreateAlert(
+            entryAveragePrice: 120m, currentPrice: 130m,
+            ma5: 100m, ma20: 115m, ma120: 90m,
+            triggeredMa5: false, triggeredMa20: true, triggeredMa120: false);
+
+        var detail = MainForm.BuildJudgmentDetail(alert);
+
+        Assert.Equal("進場價/平均價 120 > MA20 115", detail);
+        Assert.DoesNotContain("現價", detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 兩個子條件都未成立時_判斷明細為空()
     {
         var alert = CreateAlert(
-            entryAveragePrice: 100m, currentPrice: 100m,
-            ma5: 600m, ma20: 600m, ma120: 600m,
+            entryAveragePrice: 100m, currentPrice: 200m,
+            ma5: 100m, ma20: 115m, ma120: 90m,
             triggeredMa5: false, triggeredMa20: false, triggeredMa120: false);
 
         Assert.Equal(string.Empty, MainForm.BuildJudgmentDetail(alert));
@@ -111,15 +94,15 @@ public sealed class MainFormResultsFormattingTests
         "宜鼎",
         currentPrice,
         8,
-        480m,
+        110m,
         ma5,
         ma20,
-        480m,
+        90m,
         ma120,
         triggeredMa5,
         triggeredMa20,
         triggeredMa120,
-        "均價已大於或等於進場價/平均價或現價其中一項：測試",
+        "符合通知條件：進場價/平均價 120 > MA20 115；現價 98 < MA5 100。",
         MarketType.Otc,
         null,
         null,

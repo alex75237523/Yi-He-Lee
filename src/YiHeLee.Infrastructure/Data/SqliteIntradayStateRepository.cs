@@ -260,7 +260,7 @@ public sealed class SqliteIntradayStateRepository : IIntradayStateRepository
             ExcelRow INTEGER NOT NULL,                       -- Excel 原始列號
             StockCode TEXT NOT NULL,                         -- 股票代碼
             AlertKind INTEGER NOT NULL,                      -- 1均線觸發／2缺技術資料／3現價無效／4進場價無效
-            MaWindow INTEGER NOT NULL,                       -- 均線天數（5／20／120；非均線類通知為 0）
+            MaWindow INTEGER NOT NULL,                       -- 2026-07-19 起一律為 0：代表 MA5＋MA20 複合策略或其他非單一均線通知（舊 5／20／120 已作廢）
             IsActive INTEGER NOT NULL,                       -- 條件目前是否成立
             FirstTriggeredAt TEXT NOT NULL,                  -- 本輪首次成立時間
             LastEvaluatedAt TEXT NOT NULL,                   -- 最後一次判斷時間

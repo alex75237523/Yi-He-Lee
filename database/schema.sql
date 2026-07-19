@@ -1,5 +1,10 @@
 PRAGMA foreign_keys = ON;
 
+-- 2026-07-19 正式策略：唯一通知條件為「進場價/平均價 > MA20 AND 現價 < MA5」（嚴格大於／小於，相等不觸發），
+-- MA60／MA120 只保存與顯示、不參與觸發。StrategyAlerts.TriggeredMa5／TriggeredMa20／TriggeredMa120 與
+-- IntradayAlertState.MaWindow 的語意已依此更新（見各欄位註解）。舊的「MA5／MA20／MA120 任一均價與價格比較（OR）」
+-- 規則已作廢，僅保留於歷史異動紀錄。
+
 -- 股票主檔：避免每日技術資料重複保存股票名稱。
 CREATE TABLE IF NOT EXISTS Stocks (
     StockCode TEXT NOT NULL PRIMARY KEY,            -- 股票代碼
@@ -114,9 +119,9 @@ CREATE TABLE IF NOT EXISTS StrategyAlerts (
     MovingAverage20 NUMERIC NULL,                   -- 20日均價
     MovingAverage60 NUMERIC NULL,                   -- 60日均價
     MovingAverage120 NUMERIC NULL,                  -- 120日均價
-    TriggeredMa5 INTEGER NOT NULL,                  -- 是否觸發5日均價（均價 >= 進場價/平均價 或 均價 >= 現價）
-    TriggeredMa20 INTEGER NOT NULL,                 -- 是否觸發20日均價（均價 >= 進場價/平均價 或 均價 >= 現價）
-    TriggeredMa120 INTEGER NOT NULL,                -- 是否觸發120日均價（均價 >= 進場價/平均價 或 均價 >= 現價）
+    TriggeredMa5 INTEGER NOT NULL,                  -- 2026-07-19 新語意：子條件「現價 < MA5」是否成立
+    TriggeredMa20 INTEGER NOT NULL,                 -- 2026-07-19 新語意：子條件「進場價/平均價 > MA20」是否成立
+    TriggeredMa120 INTEGER NOT NULL,                -- 固定為 0（MA120 不再參與策略）；整體觸發＝TriggeredMa5 AND TriggeredMa20
     TriggerDescription TEXT NOT NULL,               -- 觸發說明
     MarketType INTEGER NULL,                        -- 市場別
     IndicatorType INTEGER NULL,                     -- 資料類型
@@ -330,7 +335,7 @@ CREATE TABLE IF NOT EXISTS IntradayAlertState (
     ExcelRow INTEGER NOT NULL,                       -- Excel 原始列號
     StockCode TEXT NOT NULL,                         -- 股票代碼
     AlertKind INTEGER NOT NULL,                      -- 1均線觸發／2缺技術資料／3現價無效（DDE）／4進場價/平均價無效
-    MaWindow INTEGER NOT NULL,                       -- 均線天數（5／20／120；非均線類通知為 0）
+    MaWindow INTEGER NOT NULL,                       -- 2026-07-19 起一律為 0：代表 MA5＋MA20 複合策略或其他非單一均線通知（舊 5／20／120 已作廢）
     IsActive INTEGER NOT NULL,                       -- 條件目前是否成立
     FirstTriggeredAt TEXT NOT NULL,                  -- 本輪首次成立時間
     LastEvaluatedAt TEXT NOT NULL,                   -- 最後一次判斷時間

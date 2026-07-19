@@ -283,8 +283,10 @@ public sealed class IntradayMonitoringService
     /// 2. 上一次已成立、本次仍成立 → 只更新 LastEvaluatedAt，不重複通知。
     /// 3. 上一次成立、本次不成立 → IsActive=false、保存 ClearedAt。
     /// 4. 清除後再次成立 → 可以再次通知。
-    /// 均線觸發依 MaWindow（5／20／120）分開記錄；價格異常與缺技術資料類通知 MaWindow=0。
-    /// 不同客戶頁籤、不同列、不同 MA 條件的狀態互相獨立，不得互相覆蓋。
+    /// 2026-07-19 起均線觸發改為「進場價/平均價 &gt; MA20 且 現價 &lt; MA5」單一不可拆開的複合條件，
+    /// 去重狀態一律 MaWindow=0（不再依 MA 天數 5／20／120 分開跳通知）；價格異常與缺技術資料類通知同樣為 MaWindow=0。
+    /// 舊版當日殘留的 MaWindow=5／20／120 Active 狀態，因不在本次的 currentKeys 中，會被正常轉為不成立／清除，
+    /// 不會阻擋新的 MaWindow=0 複合通知。不同客戶頁籤、不同列的狀態互相獨立，不得互相覆蓋。
     /// </summary>
     internal static (IReadOnlyList<IntradayAlertStateRecord> StatesToPersist, IReadOnlySet<string> NewlyTriggeredKeys)
         ApplyNotificationDeduplication(
@@ -350,29 +352,13 @@ public sealed class IntradayMonitoringService
     private static IEnumerable<string> AlertStateKeysOf(StrategyAlert alert)
         => AlertStateKeyPairsOf(alert).Select(x => x.Key);
 
-    /// <summary>把一筆 StrategyAlert 展開為去重狀態鍵：均線觸發依觸發的 MA 天數各一筆，其餘通知一筆（MaWindow=0）。</summary>
+    /// <summary>
+    /// 把一筆 StrategyAlert 展開為去重狀態鍵。2026-07-19 起 MA5＋MA20 複合策略是不可拆開的單一條件，
+    /// 每筆通知（含均線複合觸發、價格異常、缺技術資料）都只對應一個 MaWindow=0 的狀態鍵，
+    /// 同一持股每次複合條件成立只產生一筆通知，不得分別對 MA5 與 MA20 各跳一次。
+    /// </summary>
     private static IEnumerable<(string Key, int MaWindow)> AlertStateKeyPairsOf(StrategyAlert alert)
     {
-        if (alert.AlertKind == AlertKind.MovingAverageTriggered)
-        {
-            if (alert.TriggeredMa5)
-            {
-                yield return (BuildStateKey(alert.SheetName, alert.ExcelRow, alert.StockCode, alert.AlertKind, 5), 5);
-            }
-
-            if (alert.TriggeredMa20)
-            {
-                yield return (BuildStateKey(alert.SheetName, alert.ExcelRow, alert.StockCode, alert.AlertKind, 20), 20);
-            }
-
-            if (alert.TriggeredMa120)
-            {
-                yield return (BuildStateKey(alert.SheetName, alert.ExcelRow, alert.StockCode, alert.AlertKind, 120), 120);
-            }
-
-            yield break;
-        }
-
         yield return (BuildStateKey(alert.SheetName, alert.ExcelRow, alert.StockCode, alert.AlertKind, 0), 0);
     }
 

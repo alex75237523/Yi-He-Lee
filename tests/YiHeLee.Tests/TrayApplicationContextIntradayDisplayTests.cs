@@ -75,16 +75,16 @@ public sealed class TrayApplicationContextIntradayDisplayTests
                 MovingAverage20: 95m,
                 MovingAverage60: 98m,
                 MovingAverage120: 99m,
-                TriggeredMa5: true,
-                TriggeredMa20: true,
-                TriggeredMa120: true,
-                TriggerDescription: "均價已大於或等於進場價/平均價或現價其中一項",
+                TriggeredMa5: true,   // 現價 < MA5
+                TriggeredMa20: true,  // 進場價/平均價 > MA20
+                TriggeredMa120: false,
+                TriggerDescription: "符合通知條件：進場價/平均價 100 > MA20 95；現價 80 < MA5 90。",
                 MarketType: MarketType.Listed,
                 IndicatorType: null,
                 SourceUrl: null,
                 PriceSourceProvider: "TWSE",
                 CalculatedAt: Now,
-                EntryAveragePrice: 80m,
+                EntryAveragePrice: 100m,
                 EntryAveragePriceIssue: null,
                 CurrentPriceIssue: null))
             .ToArray();

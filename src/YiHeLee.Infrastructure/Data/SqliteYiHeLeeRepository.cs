@@ -811,9 +811,9 @@ public sealed class SqliteYiHeLeeRepository : IYiHeLeeRepository
             MovingAverage20 NUMERIC NULL,
             MovingAverage60 NUMERIC NULL,
             MovingAverage120 NUMERIC NULL,
-            TriggeredMa5 INTEGER NOT NULL,
-            TriggeredMa20 INTEGER NOT NULL,
-            TriggeredMa120 INTEGER NOT NULL,
+            TriggeredMa5 INTEGER NOT NULL,   -- 2026-07-19 新語意：子條件「現價 < MA5」是否成立
+            TriggeredMa20 INTEGER NOT NULL,  -- 2026-07-19 新語意：子條件「進場價/平均價 > MA20」是否成立
+            TriggeredMa120 INTEGER NOT NULL, -- 固定為 0（MA120 不再參與策略）；整體觸發＝TriggeredMa5 AND TriggeredMa20
             TriggerDescription TEXT NOT NULL,
             MarketType INTEGER NULL,
             IndicatorType INTEGER NULL,

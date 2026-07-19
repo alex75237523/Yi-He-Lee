@@ -3,17 +3,20 @@ using YiHeLee.Domain;
 namespace YiHeLee.Application.Services;
 
 /// <summary>
-/// 均線策略判斷。正式 MA5／MA20／MA120 一律來自本系統依 TWSE／TPEx 官方收盤價自行計算的
+/// 均線策略判斷。正式 MA5／MA20／MA60／MA120 一律來自本系統依 TWSE／TPEx 官方收盤價自行計算的
 /// <see cref="MovingAverageResult"/>；鉅亨網多頭／空頭排列僅作交叉驗證與清單保存，不再是正式均價來源。
-/// 2026-07-13 正式更正雙價格判斷方向：客戶 Excel「進場價/平均價」與「現價」是兩個完全獨立、不得混用的欄位，
-/// 每一條均價只要大於或等於「進場價/平均價」或「現價」其中一個價格就算成立（見 <see cref="IsDualPriceMatch"/>）。
+/// 2026-07-19 正式策略：唯一的通知條件是「進場價/平均價 &gt; MA20 且 現價 &lt; MA5」複合條件
+/// （見 <see cref="IsEntryAboveMa20AndCurrentBelowMa5"/>），必須兩項同時成立才通知；
+/// 邊界一律嚴格大於／小於，相等不觸發。MA60／MA120 只保存與顯示，不參與觸發。
+/// 舊的「MA5／MA20／MA120 任一均價與進場價/平均價或現價比較（OR）」規則已作廢。
 /// </summary>
 public sealed class StrategyEvaluationService
 {
     /// <summary>
-    /// 依需求逐項判斷 MA5、MA20、MA120：每一條均價只要大於或等於「進場價/平均價」或「現價」其中一個價格
-    /// 才算成立（<see cref="IsDualPriceMatch"/>），任一條件成立即產生通知。MA60 僅保存與顯示，不參與觸發。
-    /// 任一均線因交易日數不足而為 null 時，該項不得觸發、也不得硬算。
+    /// 依 2026-07-19 正式策略判斷：唯一條件是「進場價/平均價 &gt; MA20 且 現價 &lt; MA5」，
+    /// 必須兩項同時成立才產生通知（<see cref="IsEntryAboveMa20AndCurrentBelowMa5"/>）。
+    /// 因複合條件同時需要 MA5 與 MA20，任一缺少（交易日數不足而為 null）即無法判斷，明確顯示缺少哪一條，
+    /// 不得改用 MA60／MA120 或其他均線替代，也不得硬算。MA60／MA120 僅保存與顯示，不參與觸發。
     /// 「進場價/平均價」與「現價」皆可能個別無效（Excel 錯誤值、空白、0、負數或無法解析）；兩者是完全獨立的
     /// 欄位，不得混用、不得互相代替、也不得只取其中一個判斷。任一價格無效就不得觸發，且必須分別產生對應的
     /// 異常通知（<see cref="AlertKind.EntryAveragePriceInvalid"/>／<see cref="AlertKind.CurrentPriceInvalid"/>），
@@ -199,17 +202,56 @@ public sealed class StrategyEvaluationService
                 continue;
             }
 
-            var ma5Triggered = IsDualPriceMatch(ma.MovingAverage5, entryAveragePrice, currentPrice);
-            var ma20Triggered = IsDualPriceMatch(ma.MovingAverage20, entryAveragePrice, currentPrice);
-            var ma120Triggered = IsDualPriceMatch(ma.MovingAverage120, entryAveragePrice, currentPrice);
+            // 2026-07-19 正式策略同時需要 MA5 與 MA20；任一缺少（逐檔歷史資料不足或回補失敗而為 null）
+            // 即無法判斷複合條件，明確顯示缺少哪一條，不得改用 MA60／MA120 或其他均線替代、也不得硬算。
+            if (ma.MovingAverage5 is null || ma.MovingAverage20 is null)
+            {
+                var (missingMaReason, missingMaStatus) = DescribeMissingMovingAverage(ma);
+                result.Add(new StrategyAlert(
+                    tradeDate,
+                    AlertKind.TechnicalIndicatorMissing,
+                    holding.WorkbookPath,
+                    holding.SheetName,
+                    holding.CustomerName,
+                    holding.ExcelRow,
+                    holding.StockCode,
+                    holding.StockName,
+                    currentPrice,
+                    holding.Quantity,
+                    ma.ClosePrice,
+                    ma.MovingAverage5,
+                    ma.MovingAverage20,
+                    ma.MovingAverage60,
+                    ma.MovingAverage120,
+                    false, false, false,
+                    missingMaReason,
+                    marketType,
+                    null,
+                    null,
+                    sourceProvider,
+                    calculatedAt,
+                    missingMaStatus,
+                    ma.MissingReason,
+                    ma.AvailableTradingDayCount,
+                    ma.LatestAvailableTradeDate,
+                    entryAveragePrice,
+                    null,
+                    null));
+                continue;
+            }
 
-            if (!ma5Triggered && !ma20Triggered && !ma120Triggered)
+            // 子條件：TriggeredMa20 代表「進場價/平均價 > MA20」、TriggeredMa5 代表「現價 < MA5」。
+            // 整體只有兩項同時成立才觸發；任一子條件單獨成立都不得觸發（見 IsEntryAboveMa20AndCurrentBelowMa5）。
+            var entryAboveMa20 = IsEntryAboveMa20(ma.MovingAverage20, entryAveragePrice);
+            var currentBelowMa5 = IsCurrentBelowMa5(ma.MovingAverage5, currentPrice);
+
+            if (!IsEntryAboveMa20AndCurrentBelowMa5(ma.MovingAverage5, ma.MovingAverage20, entryAveragePrice, currentPrice))
             {
                 continue;
             }
 
-            // 均線本身可能因逐檔歷史資料不足或回補失敗而部分為 null（例如只有 MA5、缺 MA20／60／120），
-            // 但只要已算出的均線確實觸發條件，仍必須通知；同時如實標示計算狀態與缺少原因，
+            // 均線本身可能因逐檔歷史資料不足或回補失敗而部分為 null（例如 MA5／MA20 已足、缺 MA120），
+            // 但只要複合條件成立仍必須通知；同時如實標示計算狀態與缺少原因，
             // 不得把「部分均線空白」當成沒有說明的正常結果（見 docs/01_需求與規則.md）。
             var diagnosticStatus = ma.CalculationStatus switch
             {
@@ -217,11 +259,6 @@ public sealed class StrategyEvaluationService
                 CalculationStatus.BackfillFailed => "歷史回補失敗",
                 _ => "歷史資料不足"
             };
-
-            var triggers = new List<string>();
-            if (ma5Triggered) triggers.Add("5 日均價");
-            if (ma20Triggered) triggers.Add("20 日均價");
-            if (ma120Triggered) triggers.Add("120 日均價");
 
             result.Add(new StrategyAlert(
                 tradeDate,
@@ -239,10 +276,10 @@ public sealed class StrategyEvaluationService
                 ma.MovingAverage20,
                 ma.MovingAverage60,
                 ma.MovingAverage120,
-                ma5Triggered,
-                ma20Triggered,
-                ma120Triggered,
-                $"均價已大於或等於進場價/平均價或現價其中一項：{string.Join("、", triggers)}",
+                currentBelowMa5,
+                entryAboveMa20,
+                false,
+                BuildTriggeredDescription(entryAveragePrice, ma.MovingAverage20!.Value, currentPrice, ma.MovingAverage5!.Value),
                 marketType,
                 null,
                 null,
@@ -263,9 +300,11 @@ public sealed class StrategyEvaluationService
     /// <summary>
     /// 產生「每一筆有效持股」的完整計算結果，供 Excel「每日五日均價策略」頁籤輸出使用。
     /// 與 <see cref="Evaluate"/> 不同，本方法絕對不得因為未觸發、進場價/平均價或現價無效、或均線暫時缺口
-    /// 而略過任何一筆持股；任一價格無效只能讓該筆的 <see cref="HoldingStrategyResult.OverallResult"/>
-    /// 顯示為「暫時無法判斷」，其餘官方收盤價、MA5／MA20／MA60／MA120、有效交易日數、
-    /// 鉅亨交叉驗證狀態一律照實填入，不得留白、不得標記為「均線計算失敗」。
+    /// 而略過任何一筆持股；任一價格無效或 MA5／MA20 缺少只能讓該筆的
+    /// <see cref="HoldingStrategyResult.OverallResult"/> 顯示為「暫時無法判斷／無法判斷」，
+    /// 其餘官方收盤價、MA5／MA20／MA60／MA120、有效交易日數、鉅亨交叉驗證狀態一律照實填入，
+    /// 不得留白、不得標記為「均線計算失敗」。觸發判斷與 <see cref="Evaluate"/> 共用同一
+    /// 複合條件（<see cref="IsEntryAboveMa20AndCurrentBelowMa5"/>），兩者結果必須完全一致。
     /// </summary>
     public IReadOnlyList<HoldingStrategyResult> EvaluateAll(
         DateOnly tradeDate,
@@ -313,7 +352,7 @@ public sealed class StrategyEvaluationService
             byCode.TryGetValue(code, out var ma);
             var cnyesStatus = cnyesValidationStatuses is not null && cnyesValidationStatuses.TryGetValue(code, out var cv) ? cv : "不適用";
 
-            // 「進場價/平均價」與「現價」皆可能個別無效：僅影響最後的雙價格比較，均線本身若已算出
+            // 「進場價/平均價」與「現價」皆可能個別無效：僅影響最後的複合條件比較，均線本身若已算出
             // 仍必須照實輸出，不得留白，也不得標記為「均線計算失敗」。兩者同時無效時，兩個原因都必須
             // 能讓使用者看見，本型別每一筆持股只有一列，因此原因會合併顯示於 MissingReason／TriggerDescription。
             if (holding.EntryAveragePrice is null || holding.CurrentPrice is null)
@@ -381,18 +420,33 @@ public sealed class StrategyEvaluationService
                 continue;
             }
 
-            var ma5Triggered = IsDualPriceMatch(ma.MovingAverage5, entryAveragePrice, currentPrice);
-            var ma20Triggered = IsDualPriceMatch(ma.MovingAverage20, entryAveragePrice, currentPrice);
-            var ma120Triggered = IsDualPriceMatch(ma.MovingAverage120, entryAveragePrice, currentPrice);
-            var anyTriggered = ma5Triggered || ma20Triggered || ma120Triggered;
+            // 2026-07-19 正式策略同時需要 MA5 與 MA20；任一缺少即無法判斷複合條件，
+            // OverallResult 顯示「無法判斷」並明確說明缺少哪一條，其餘已算出的均線照實輸出、不得留白。
+            if (ma.MovingAverage5 is null || ma.MovingAverage20 is null)
+            {
+                var (missingMaReason, _) = DescribeMissingMovingAverage(ma);
+                result.Add(new HoldingStrategyResult(
+                    tradeDate, holding.CustomerName, holding.SheetName, holding.ExcelRow,
+                    holding.StockCode, code, holding.StockName,
+                    marketType,
+                    entryAveragePrice, entryAveragePriceStatus, holding.EntryAveragePriceIssue,
+                    currentPrice, currentPriceStatus, holding.CurrentPriceIssue,
+                    ma.ClosePrice, ma.MovingAverage5, ma.MovingAverage20, ma.MovingAverage60, ma.MovingAverage120,
+                    ma.AvailableTradingDayCount, ma.LatestAvailableTradeDate,
+                    DescribeCalculationStatus(ma.CalculationStatus), ma.MissingReason, cnyesStatus,
+                    false, false, false,
+                    "無法判斷", missingMaReason, calculatedAt));
+                continue;
+            }
 
-            var triggers = new List<string>();
-            if (ma5Triggered) triggers.Add("5 日均價");
-            if (ma20Triggered) triggers.Add("20 日均價");
-            if (ma120Triggered) triggers.Add("120 日均價");
-            var triggerDescription = anyTriggered
-                ? $"均價已大於或等於進場價/平均價或現價其中一項：{string.Join("、", triggers)}"
-                : "MA5／MA20／MA120 尚未有任一均價大於或等於進場價/平均價或現價，未觸發。";
+            // Ma20Match 代表「進場價/平均價 > MA20」、Ma5Match 代表「現價 < MA5」；整體只有兩項同時成立才觸發。
+            var entryAboveMa20 = IsEntryAboveMa20(ma.MovingAverage20, entryAveragePrice);
+            var currentBelowMa5 = IsCurrentBelowMa5(ma.MovingAverage5, currentPrice);
+            var triggered = IsEntryAboveMa20AndCurrentBelowMa5(ma.MovingAverage5, ma.MovingAverage20, entryAveragePrice, currentPrice);
+
+            var triggerDescription = triggered
+                ? BuildTriggeredDescription(entryAveragePrice, ma.MovingAverage20!.Value, currentPrice, ma.MovingAverage5!.Value)
+                : BuildNotTriggeredDescription(entryAboveMa20, currentBelowMa5);
 
             result.Add(new HoldingStrategyResult(
                 tradeDate, holding.CustomerName, holding.SheetName, holding.ExcelRow,
@@ -403,8 +457,8 @@ public sealed class StrategyEvaluationService
                 ma.ClosePrice, ma.MovingAverage5, ma.MovingAverage20, ma.MovingAverage60, ma.MovingAverage120,
                 ma.AvailableTradingDayCount, ma.LatestAvailableTradeDate,
                 DescribeCalculationStatus(ma.CalculationStatus), ma.MissingReason, cnyesStatus,
-                ma5Triggered, ma20Triggered, ma120Triggered,
-                anyTriggered ? "觸發" : "未觸發",
+                currentBelowMa5, entryAboveMa20, false,
+                triggered ? "觸發" : "未觸發",
                 triggerDescription,
                 calculatedAt));
         }
@@ -413,17 +467,52 @@ public sealed class StrategyEvaluationService
     }
 
     /// <summary>
-    /// 單一均價的雙價格判斷核心：均價只要大於或等於「進場價/平均價」或「現價」其中一個價格就算成立。
-    /// <see cref="Evaluate"/>、<see cref="EvaluateAll"/> 與畫面顯示都必須透過本方法判斷，
-    /// 不得各自重複實作而產生不一致的結果。均線為 null（交易日數不足）時一律不成立，也不得硬算。
+    /// 2026-07-19 正式策略的唯一集中判斷方法：只有「進場價/平均價 &gt; MA20 且 現價 &lt; MA5」兩項同時成立才觸發。
+    /// <see cref="Evaluate"/>、<see cref="EvaluateAll"/> 都必須透過本方法判斷整體是否觸發，禁止各自複製公式。
+    /// 邊界一律嚴格大於／小於（相等不觸發）；MA5 或 MA20 為 null（交易日數不足）時一律不成立，也不得硬算。
     /// </summary>
-    private static bool IsDualPriceMatch(
-        decimal? movingAverage,
+    private static bool IsEntryAboveMa20AndCurrentBelowMa5(
+        decimal? movingAverage5,
+        decimal? movingAverage20,
         decimal entryAveragePrice,
         decimal currentPrice)
     {
-        return movingAverage is decimal ma
-            && (ma >= entryAveragePrice || ma >= currentPrice);
+        return IsEntryAboveMa20(movingAverage20, entryAveragePrice)
+            && IsCurrentBelowMa5(movingAverage5, currentPrice);
+    }
+
+    /// <summary>子條件：「進場價/平均價 &gt; MA20」。MA20 為 null 時一律不成立。嚴格大於，相等不成立。</summary>
+    private static bool IsEntryAboveMa20(decimal? movingAverage20, decimal entryAveragePrice)
+        => movingAverage20 is decimal ma20 && entryAveragePrice > ma20;
+
+    /// <summary>子條件：「現價 &lt; MA5」。MA5 為 null 時一律不成立。嚴格小於，相等不成立。</summary>
+    private static bool IsCurrentBelowMa5(decimal? movingAverage5, decimal currentPrice)
+        => movingAverage5 is decimal ma5 && currentPrice < ma5;
+
+    /// <summary>觸發時的說明文字：列出兩個子條件與實際數值，讓使用者不需理解程式邏輯即可看懂原因。</summary>
+    private static string BuildTriggeredDescription(
+        decimal entryAveragePrice, decimal movingAverage20, decimal currentPrice, decimal movingAverage5)
+        => $"符合通知條件：進場價/平均價 {entryAveragePrice:0.##} > MA20 {movingAverage20:0.##}；" +
+           $"現價 {currentPrice:0.##} < MA5 {movingAverage5:0.##}。";
+
+    /// <summary>未觸發時的說明文字：逐項列出兩個子條件是否成立，並說明必須兩項同時成立。</summary>
+    private static string BuildNotTriggeredDescription(bool entryAboveMa20, bool currentBelowMa5)
+        => $"未觸發：進場價/平均價 > MA20：{(entryAboveMa20 ? "成立" : "不成立")}；" +
+           $"現價 < MA5：{(currentBelowMa5 ? "成立" : "不成立")}；整體條件必須兩項同時成立。";
+
+    /// <summary>MA5 或 MA20 缺少時的無法判斷說明與診斷狀態：明確列出缺少哪一條，不得改用 MA60／MA120 替代。</summary>
+    private static (string Reason, string DiagnosticStatus) DescribeMissingMovingAverage(MovingAverageResult ma)
+    {
+        var missing = new List<string>();
+        if (ma.MovingAverage5 is null) missing.Add("MA5");
+        if (ma.MovingAverage20 is null) missing.Add("MA20");
+
+        var reason =
+            $"缺少 {string.Join("、", missing)}，無法判斷「進場價/平均價 > MA20 且 現價 < MA5」複合策略，" +
+            "不得改用 MA60／MA120 或其他均線替代。" +
+            (string.IsNullOrWhiteSpace(ma.MissingReason) ? string.Empty : ma.MissingReason);
+
+        return (reason, "均線資料不足");
     }
 
     private static string DescribeCalculationStatus(CalculationStatus status) => status switch

@@ -66,8 +66,12 @@ public sealed record CustomerHolding(
 /// <see cref="EntryAveragePrice"/>／<see cref="EntryAveragePriceIssue"/> 為表頭「進場價/平均價」欄位（非 DDE），
 /// 與現價完全獨立，AlertKind 為 EntryAveragePriceInvalid 時 <see cref="EntryAveragePrice"/> 必為 null；
 /// 兩組價格欄位禁止共用同一個 Issue 或同一個數值。
-/// <see cref="TriggeredMa5"/>／<see cref="TriggeredMa20"/>／<see cref="TriggeredMa120"/> 代表該均價大於或等於
-/// 「進場價/平均價」或「現價」其中一個價格（任一價格達標）。
+/// 2026-07-19 正式策略重新定義下列三個旗標（欄位沿用，語意已更新）：
+/// <see cref="TriggeredMa5"/> 代表子條件「現價 &lt; MA5」是否成立；
+/// <see cref="TriggeredMa20"/> 代表子條件「進場價/平均價 &gt; MA20」是否成立；
+/// <see cref="TriggeredMa120"/> 固定為 false，MA120 不再參與策略。
+/// 整體是否觸發只能是 <see cref="TriggeredMa5"/> &amp;&amp; <see cref="TriggeredMa20"/>（兩項同時成立），
+/// 任一旗標單獨成立都不得視為觸發。
 /// <see cref="DiagnosticStatus"/>／<see cref="MissingReason"/>／<see cref="AvailableTradingDayCount"/>／
 /// <see cref="LatestAvailableTradeDate"/> 為 Excel 輸出診斷欄位（計算狀態、缺少原因、有效交易日數、最新收盤日期），
 /// 不得讓使用者只看到空白卻不知道原因。</summary>
@@ -205,8 +209,11 @@ public sealed record HistoricalBackfillStockException(
 /// <see cref="MovingAverage60"/>／<see cref="MovingAverage120"/> 等已由官方收盤價算出的欄位。
 /// <see cref="EntryAveragePrice"/>／<see cref="EntryAveragePriceStatus"/>／<see cref="EntryAveragePriceIssue"/>
 /// 為表頭「進場價/平均價」欄位（非 DDE），與現價完全獨立，禁止與現價混用、共用同一個 Issue 或數值。
-/// <see cref="Ma5Match"/>／<see cref="Ma20Match"/>／<see cref="Ma120Match"/> 代表該均價大於或等於
-/// 「進場價/平均價」或「現價」其中一項。
+/// 2026-07-19 正式策略重新定義下列三個旗標（欄位沿用，語意已更新）：
+/// <see cref="Ma5Match"/> 代表子條件「現價 &lt; MA5」是否成立；
+/// <see cref="Ma20Match"/> 代表子條件「進場價/平均價 &gt; MA20」是否成立；
+/// <see cref="Ma120Match"/> 固定為 false，MA120 不再參與策略。
+/// <see cref="OverallResult"/> 為「觸發」只能是 <see cref="Ma5Match"/> &amp;&amp; <see cref="Ma20Match"/>（兩項同時成立）。
 /// <see cref="StrategyAlert"/> 只負責中央通知與需要提醒使用者的子集合，Excel 完整結果一律以本型別為準。
 /// </summary>
 public sealed record HoldingStrategyResult(
@@ -432,7 +439,8 @@ public sealed record BaselinePreparationResult(
 /// 盤中通知去重狀態（IntradayAlertState 資料表，2026-07-13 新增）。
 /// 同一條件持續成立時只在「由不成立變成立」時通知一次；成立→不成立記錄 <see cref="ClearedAt"/>；
 /// 之後再次成立可再次通知。程式重啟後由 SQLite 恢復狀態，不得對仍持續成立的條件重複通知。
-/// <see cref="MaWindow"/> 為 5／20／120（均線觸發），非均線類通知（價格異常、缺技術資料）為 0。
+/// <see cref="MaWindow"/>：2026-07-19 起 MA5＋MA20 複合策略與其他非單一均線通知一律為 0；
+/// 舊版的 5／20／120（依單一均線分開）已作廢，殘留狀態第一次執行新版時會被清除。
 /// </summary>
 public sealed record IntradayAlertStateRecord(
     DateOnly EvaluationDate,

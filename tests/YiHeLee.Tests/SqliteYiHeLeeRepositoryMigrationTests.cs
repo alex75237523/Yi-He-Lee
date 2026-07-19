@@ -205,11 +205,12 @@ public sealed class SqliteYiHeLeeRepositoryMigrationTests : IDisposable
 
         var holding = new CustomerHolding(
             TradeDate, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
-            520m, 8, @"C:\DATA\親帶績效.XLSX|王保仁-A|4|5285", null, 501m, null);
+            470m, 8, @"C:\DATA\親帶績效.XLSX|王保仁-A|4|5285", null, 501m, null);
+        // 2026-07-19 正式策略：進場價 501 > MA20 480、現價 470 < MA5 490 → TriggeredMa20／TriggeredMa5 皆成立，TriggeredMa120 固定 false。
         var alert = new StrategyAlert(
             TradeDate, AlertKind.MovingAverageTriggered, @"C:\Data\親帶績效.xlsx", "王保仁-A", "王保仁", 4, "5285", "宜鼎",
-            520m, 8, 480m, 490m, 480m, 480m, 600m, true, true, false,
-            "均價已大於或等於進場價/平均價或現價其中一項：5 日均價、20 日均價",
+            470m, 8, 480m, 490m, 480m, 480m, 600m, true, true, false,
+            "符合通知條件：進場價/平均價 501 > MA20 480；現價 470 < MA5 490。",
             MarketType.Otc, null, null, "TPEx", Now(),
             EntryAveragePrice: 501m, EntryAveragePriceIssue: null, CurrentPriceIssue: null);
 
